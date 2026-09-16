@@ -347,6 +347,7 @@ function beginJourney() {
   autoplayPaused = false;
   status.textContent = "";
   runAutoplay();
+  updateFooterLabel(activeChapter);
 }
 function toggleAutoplayPause() {
   if (navMode !== "auto" || autoplayDone) return;
