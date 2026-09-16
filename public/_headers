@@ -1,0 +1,32 @@
+# Cloudflare Pages and Netlify both read this file in the same format.
+# The WebP frame sheets, poster, and mask JSON never change between deploys
+# under these filenames, so browsers/edge can hold onto them for a while;
+# stale-while-revalidate means a redeploy is still picked up quickly rather
+# than waiting out the full max-age.
+/assets/frames/*
+  Cache-Control: public, max-age=604800, stale-while-revalidate=86400
+
+/assets/poster/*
+  Cache-Control: public, max-age=604800, stale-while-revalidate=86400
+
+/assets/monogram.svg
+  Cache-Control: public, max-age=604800, stale-while-revalidate=86400
+
+/assets/hero-skyline.json
+  Cache-Control: public, max-age=604800, stale-while-revalidate=86400
+
+# Vite fingerprints these filenames with a content hash, so a changed file
+# always gets a new URL — safe to cache "forever".
+/assets/index-*.js
+  Cache-Control: public, max-age=31536000, immutable
+
+/assets/index-*.css
+  Cache-Control: public, max-age=31536000, immutable
+
+# The HTML entry point should always be revalidated so visitors get the
+# bundle references from the latest deploy, not a cached older one.
+/
+  Cache-Control: public, max-age=0, must-revalidate
+
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate

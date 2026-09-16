@@ -261,8 +261,32 @@ function animateTo(targetTime, { speed = 1, onDone } = {}) {
   const direction = Math.sign(targetTime - startTime) || 1;
   const totalDelta = Math.abs(targetTime - startTime);
   if (totalDelta < 0.001) { onDone?.(); return; }
+  let pausedMs = 0;
+  let bufferingSince = 0;
   function step(now) {
-    const elapsed = ((now - startWall) / 1000) * speed;
+    // While a frame is still decoding (player.waitSince set by a failed
+    // draw), hold the target still instead of continuing to advance it from
+    // wall-clock time. Otherwise, under sustained decode/network pressure,
+    // the requested position keeps racing ahead of what's actually been
+    // drawn, pushing the one sheet the display is stuck waiting on outside
+    // the prefetch window — which aborts its in-flight fetch and restarts
+    // it, over and over, freezing playback for a long stretch. Visually
+    // that reads as the film "not moving" or looping rather than a clean
+    // continuous advance, since nothing changes on screen the whole time.
+    if (player?.waitSince) {
+      if (!bufferingSince) bufferingSince = now;
+      // Don't wait forever on a sheet that's permanently failed to load
+      // (network down, etc.) — give up after a while rather than hanging.
+      if (now - bufferingSince > 10000 || staticMode || player.closed) {
+        tweenRaf = 0;
+        onDone?.();
+        return;
+      }
+      tweenRaf = requestAnimationFrame(step);
+      return;
+    }
+    if (bufferingSince) { pausedMs += now - bufferingSince; bufferingSince = 0; }
+    const elapsed = ((now - startWall - pausedMs) / 1000) * speed;
     const progressed = Math.min(elapsed, totalDelta);
     const target = startTime + direction * progressed;
     if (!document.hidden && player) player.scrub(target - player.time);
@@ -430,6 +454,11 @@ stage.addEventListener("touchend", event => {
       tapNavigate(forward);
     }
   } else if (navMode === "auto" && !autoplayDone && !pinch && inputAllowed(event)) {
+    // Without this, a light tap fires both this touchend handler and the
+    // browser's synthesized click right after it, calling
+    // toggleAutoplayPause() twice for one tap — pausing then immediately
+    // resuming instead of just pausing.
+    suppressClickUntil = performance.now() + 350;
     toggleAutoplayPause();
   }
   touch = null;
