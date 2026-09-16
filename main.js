@@ -1,9 +1,11 @@
 import { couple, venue, events } from "./wedding-data.js";
-import { FRAMES_BASE, POSTER } from "./demo-config.js";
+import { FRAMES_BASE, FILM_SRC, POSTER } from "./demo-config.js";
 import { FramePlayer } from "./frame-player.js";
+import { VideoPlayer } from "./video-player.js";
 
 const $ = selector => document.querySelector(selector);
 const canvas = $("#journey-video");
+const video = $("#journey-film");
 const journey = $("#journey");
 const stage = $(".journey-stage");
 const status = $("#media-status");
@@ -55,7 +57,6 @@ let suppressClickUntil = 0;
 const navParam = new URLSearchParams(location.search).get("nav");
 const navMode = navParam === "tap" || navParam === "scroll" ? navParam : "auto";
 document.documentElement.classList.add(`nav-${navMode}`);
-let tweenRaf = 0;
 let autoplayDone = false;
 // Whether the guest has made the film move at all yet. Before this, the page
 // sits still on the hero/home screen — nothing plays until a touch, tap, key,
@@ -186,14 +187,14 @@ function syncScroll() {
 }
 
 function stopPlayback() {
-  player?.stop();
+  // Don't stop the initial auto-mode playthrough just because the tab
+  // blurred/hid — let it naturally pause and resume (see the
+  // visibilitychange handler's player.resume() call). In any other mode,
+  // or once autoplay's finished, an in-flight animation is fine to cancel.
+  if (!(navMode === "auto" && !autoplayDone)) player?.stop();
   heldKeys.clear();
   clearInterval(keyTimer);
   stopMomentum();
-  // Don't cancel the initial auto-mode playthrough just because the tab
-  // blurred/hid — let it naturally pause and resume. Once it's finished
-  // (or in any other mode), an in-flight tween is fine to cancel.
-  if (!(navMode === "auto" && !autoplayDone)) { cancelAnimationFrame(tweenRaf); tweenRaf = 0; }
 }
 
 function inputAllowed(event) {
@@ -214,10 +215,7 @@ function loadFilm() {
   presented = 0;
   activeChapter = -1;
   updateChapter(0);
-  player = new FramePlayer({
-    canvas, status,
-    framesBase: FRAMES_BASE,
-    poster: POSTER,
+  const callbacks = {
     onFrame(time) {
       presented = time;
       updateChapter(time);
@@ -237,7 +235,13 @@ function loadFilm() {
       activeChapter = -1;
       updateChapter(0);
     },
-  });
+  };
+  // ?nav=scroll keeps the sprite-sheet canvas player (needs arbitrary,
+  // frame-accurate scrubbing); auto/tap — the guest-facing default — use a
+  // real <video> instead (see video-player.js for why).
+  player = navMode === "scroll"
+    ? new FramePlayer({ canvas, status, framesBase: FRAMES_BASE, poster: POSTER, ...callbacks })
+    : new VideoPlayer({ video, status, src: FILM_SRC, poster: POSTER, ...callbacks });
   measure();
   if (!staticMode) {
     status.textContent = "Preparing your journey…";
@@ -247,67 +251,15 @@ function loadFilm() {
   }
 }
 
-// Animates the film from its current position to targetTime, driven by
-// absolute elapsed wall-clock time rather than accumulated per-tick deltas —
-// so it can't drift or compound if the tab is throttled/backgrounded and the
-// browser later fires a burst of catch-up animation frames. Used both for
+// Animates the film from its current position to targetTime. Used both for
 // auto mode's full playthrough and for tap-like chapter-to-chapter glides.
+// Delegates to the video player's own native play-until-target (see
+// VideoPlayer.playTo) rather than driving position by hand — this function
+// is only ever used in auto/tap mode (never in ?nav=scroll), so `player` is
+// always a VideoPlayer here.
 function animateTo(targetTime, { speed = 1, onDone } = {}) {
-  cancelAnimationFrame(tweenRaf);
   if (!player) { onDone?.(); return; }
-  // Baseline off the player's own internal time, not the possibly-stale
-  // `presented` (which only updates once a frame actually finishes decoding
-  // and drawing). Using the stale value here was the cause of a visible
-  // rewind-then-forward glitch at chapter boundaries: if the previous tween
-  // ended while a frame was still buffering, `presented` could lag behind
-  // where the film had actually already reached, and the next tween would
-  // briefly scrub backward to "catch up" to its own wrong starting point.
-  const startTime = player.time;
-  const startWall = performance.now();
-  const direction = Math.sign(targetTime - startTime) || 1;
-  const totalDelta = Math.abs(targetTime - startTime);
-  if (totalDelta < 0.001) { onDone?.(); return; }
-  let pausedMs = 0;
-  let bufferingSince = 0;
-  function step(now) {
-    // While a frame is still decoding (player.waitSince set by a failed
-    // draw), hold the target still instead of continuing to advance it from
-    // wall-clock time. Otherwise, under sustained decode/network pressure,
-    // the requested position keeps racing ahead of what's actually been
-    // drawn, pushing the one sheet the display is stuck waiting on outside
-    // the prefetch window — which aborts its in-flight fetch and restarts
-    // it, over and over, freezing playback for a long stretch. Visually
-    // that reads as the film "not moving" or looping rather than a clean
-    // continuous advance, since nothing changes on screen the whole time.
-    if (player?.waitSince) {
-      if (!bufferingSince) bufferingSince = now;
-      // Don't wait forever on a sheet that's permanently failed to load
-      // (network down, etc.) — give up after a while rather than hanging.
-      if (now - bufferingSince > 10000 || staticMode || player.closed) {
-        tweenRaf = 0;
-        onDone?.();
-        return;
-      }
-      tweenRaf = requestAnimationFrame(step);
-      return;
-    }
-    if (bufferingSince) { pausedMs += now - bufferingSince; bufferingSince = 0; }
-    const elapsed = ((now - startWall - pausedMs) / 1000) * speed;
-    const progressed = Math.min(elapsed, totalDelta);
-    const target = startTime + direction * progressed;
-    if (!document.hidden && player) player.scrub(target - player.time);
-    if (progressed >= totalDelta - 0.0005) {
-      tweenRaf = 0;
-      // Guarantee arrival at the exact target frame even if the last stretch
-      // was still buffering when the wall-clock timer above finished —
-      // otherwise playback can visibly stop a frame or two short of it.
-      player?.seek(targetTime);
-      onDone?.();
-      return;
-    }
-    tweenRaf = requestAnimationFrame(step);
-  }
-  tweenRaf = requestAnimationFrame(step);
+  player.playTo(targetTime, speed, onDone);
 }
 
 // Auto mode: the film plays itself through once, then simply stops on its
@@ -321,8 +273,7 @@ function finishAutoplay() {
   if (navMode !== "auto" || autoplayDone) return;
   autoplayDone = true;
   autoplayPaused = false;
-  cancelAnimationFrame(tweenRaf);
-  tweenRaf = 0;
+  player?.stop();
   status.textContent = "";
   updateFooterLabel(activeChapter);
 }
@@ -350,9 +301,8 @@ function beginJourney() {
 }
 function toggleAutoplayPause() {
   if (navMode !== "auto" || autoplayDone) return;
-  if (tweenRaf) {
-    cancelAnimationFrame(tweenRaf);
-    tweenRaf = 0;
+  if (player?.animating) {
+    player.stop();
     autoplayPaused = true;
     status.textContent = "Paused — tap to continue";
   } else if (!journeyStarted) {
@@ -557,7 +507,7 @@ setTimeout(measure, 1000);
 window.addEventListener("blur", stopPlayback);
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) stopPlayback();
-  else measure();
+  else { measure(); player?.resume?.(); }
 });
 motionPreference.addEventListener("change", loadFilm);
 connection?.addEventListener("change", () => { if (connection.saveData) loadFilm(); });
@@ -710,8 +660,7 @@ document.querySelectorAll('a[href="#celebrations"]').forEach((link) =>
   link.addEventListener("click", (event) => {
     event.preventDefault();
     stopPlayback();
-    cancelAnimationFrame(tweenRaf);
-    tweenRaf = 0;
+    player?.stop();
     autoplayDone = true;
     detailsDialog.showModal();
     document.body.style.overflow = "hidden";
