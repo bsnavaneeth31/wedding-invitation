@@ -47,14 +47,13 @@ let momentumRaf = 0;
 let touchStart = null;
 let suppressClickUntil = 0;
 
-// Alternate navigation modes, chosen via ?nav= for side-by-side comparison:
-// "scroll" (default) is the original continuous scroll-scrubbed film.
-// "tap" replaces continuous scrubbing with discrete tap/swipe-to-advance,
-// Stories-style, and never scroll-jacks the page.
-// "auto" plays the film through once on its own, then opens the same
-// wedding-details dialog scroll/tap use; after that it navigates like tap.
+// Navigation mode. "auto" (default — the plain link, no query param) plays
+// the film through once on its own, then navigates like tap mode. The other
+// two stay available via ?nav= for testing/comparison, not linked anywhere:
+// "scroll" is the original continuous scroll-scrubbed film; "tap" replaces
+// continuous scrubbing with discrete tap/swipe-to-advance, Stories-style.
 const navParam = new URLSearchParams(location.search).get("nav");
-const navMode = navParam === "tap" || navParam === "auto" ? navParam : "scroll";
+const navMode = navParam === "tap" || navParam === "scroll" ? navParam : "auto";
 document.documentElement.classList.add(`nav-${navMode}`);
 let tweenRaf = 0;
 let autoplayDone = false;
