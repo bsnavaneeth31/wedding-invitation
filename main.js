@@ -297,6 +297,7 @@ function beginJourney() {
   ensureMusicUnmuted();
   autoplayPaused = false;
   status.textContent = "";
+  updateFooterLabel(activeChapter);
   runAutoplay();
 }
 function toggleAutoplayPause() {

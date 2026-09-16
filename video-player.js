@@ -100,6 +100,7 @@ export class VideoPlayer {
     }
     this.video.playbackRate = clamp(rate, 0.0625, 16);
     this.arriving = { target, onDone };
+    this.resync();
     const playPromise = this.video.play();
     if (playPromise?.catch) {
       playPromise.catch((error) => {
@@ -107,6 +108,18 @@ export class VideoPlayer {
       });
     }
     this.watch();
+  }
+
+  // Re-seeking to the exact current position (a no-op position-wise) forces
+  // the decoder to resync to that precise frame before resuming. Without
+  // this, some mobile browsers' video decoders can briefly render a stale,
+  // already-passed frame right after play() following a pause — the
+  // position reported by currentTime is correct throughout, but what's
+  // actually painted lags behind it for a moment. Seen as the film
+  // appearing to step back into an earlier moment right after a guest taps
+  // to resume, before catching back up.
+  resync() {
+    this.video.currentTime = this.video.currentTime;
   }
 
   watch() {
@@ -135,6 +148,7 @@ export class VideoPlayer {
   // browser itself. See main.js's stopPlayback/visibilitychange handling.
   resume() {
     if (this.closed || !this.arriving || !this.video.paused) return;
+    this.resync();
     const playPromise = this.video.play();
     if (playPromise?.catch) {
       playPromise.catch((error) => {
