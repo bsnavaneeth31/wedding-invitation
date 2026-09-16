@@ -57,6 +57,12 @@ const navMode = navParam === "tap" || navParam === "scroll" ? navParam : "auto";
 document.documentElement.classList.add(`nav-${navMode}`);
 let tweenRaf = 0;
 let autoplayDone = false;
+// Whether the guest has made the film move at all yet. Before this, the page
+// sits still on the hero/home screen — nothing plays until a touch, tap, key,
+// or scroll attempt — and that same first gesture is what unmutes the music,
+// since it's the only reliable place across every browser (iOS included) to
+// start audible playback.
+let journeyStarted = false;
 const AUTOPLAY_SPEED = 1.15;
 const TAP_TRANSITION_SPEED = 1.7;
 // Auto mode plays itself through once; after that (or once skipped) it
@@ -117,7 +123,7 @@ function updateFooterLabel(index) {
   $("#next-chapter").firstChild.textContent = staticMode
     ? "The celebrations "
     : stillAutoplaying
-      ? "Skip the film "
+      ? (journeyStarted ? "Skip the film " : "Tap to begin ")
       : tapLike()
         ? (index === 5 ? "Back to the beginning " : "Tap to continue ")
         : (index === 5 ? "Back to the beginning " : "Scroll to unfold ");
@@ -221,8 +227,7 @@ function loadFilm() {
     onReady(film) {
       duration = film.duration;
       if (restoredPosition > .001) film.seek(restoredPosition * (duration - FRAME));
-      primeMusic();
-      if (navMode === "auto" && !staticMode) runAutoplay();
+      // Sits still on the hero/home frame from here — see journeyStarted.
     },
     onError() {
       stopPlayback();
@@ -323,6 +328,7 @@ function finishAutoplay() {
 }
 function skipAutoplay() {
   if (navMode !== "auto" || autoplayDone) return;
+  ensureMusicUnmuted();
   player?.seek(Math.max(0, duration - FRAME));
   finishAutoplay();
 }
@@ -331,6 +337,17 @@ function skipAutoplay() {
 // for. An incidental tap just pauses it in place; tapping again resumes from
 // exactly where it left off.
 let autoplayPaused = false;
+// The guest's very first touch/tap/key/scroll: unmutes the music (a real
+// gesture, so it's allowed everywhere, iOS included) and sets the film in
+// motion for the first time. Everything after this first call behaves like
+// an ordinary pause/resume — ensureMusicUnmuted() is a no-op once already
+// started, so it never re-forces sound back on if the guest has since muted.
+function beginJourney() {
+  ensureMusicUnmuted();
+  autoplayPaused = false;
+  status.textContent = "";
+  runAutoplay();
+}
 function toggleAutoplayPause() {
   if (navMode !== "auto" || autoplayDone) return;
   if (tweenRaf) {
@@ -338,6 +355,8 @@ function toggleAutoplayPause() {
     tweenRaf = 0;
     autoplayPaused = true;
     status.textContent = "Paused — tap to continue";
+  } else if (!journeyStarted) {
+    beginJourney();
   } else {
     autoplayPaused = false;
     status.textContent = "";
@@ -369,6 +388,7 @@ function wheelPixels(event) {
   return event.deltaY;
 }
 window.addEventListener("wheel", event => {
+  if (!journeyStarted && navMode === "auto" && !staticMode && inputAllowed(event)) { beginJourney(); return; }
   if (navMode !== "scroll" || !inputAllowed(event) || staticMode || event.ctrlKey || !event.deltaY || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
   event.preventDefault();
   player?.scrub(wheelPixels(event) * (SECS_PER_VIEWPORT_WHEEL / innerHeight));
@@ -416,6 +436,7 @@ stage.addEventListener("touchstart", event => {
 
 stage.addEventListener("touchmove", event => {
   if (!touch || !inputAllowed(event) || !event.touches.length || event.touches.length > 2) return;
+  if (!journeyStarted && navMode === "auto" && !staticMode) beginJourney();
   const next = touchSample(event.touches);
   if (next.count !== touch.count) { touch = next; return; }
   // A two-finger parallel swipe uses the same centroid as one finger. A pinch
@@ -564,7 +585,11 @@ function goToChapter(index) {
 }
 chapterButtons.forEach(button => button.addEventListener("click", () => goToChapter(Number(button.dataset.chapter))));
 $("#next-chapter").addEventListener("click", () => {
-  if (navMode === "auto" && !autoplayDone) { skipAutoplay(); return; }
+  if (navMode === "auto" && !autoplayDone) {
+    if (!journeyStarted) beginJourney();
+    else skipAutoplay();
+    return;
+  }
   tapNavigate(true);
 });
 loadFilm();
@@ -697,12 +722,14 @@ detailsDialog.addEventListener("close", () => {
   document.body.style.overflow = "";
 });
 
-// Background music. Browsers allow autoplay without a user gesture as long
-// as it's muted, so the music starts silently the moment the film itself
-// starts — it's always running in lockstep with the film from frame one.
-// The sound toggle then just flips .muted; it never restarts playback, so
-// whatever point the (silent) music has already reached is exactly where it
-// picks up out loud — no jump back to the start.
+// Background music. The film itself now waits for the guest's first
+// touch/tap/key/scroll before it moves at all (see journeyStarted), and that
+// same first gesture is what turns the sound on — see ensureMusicUnmuted(),
+// called from beginJourney(). Using a real gesture rather than trying to
+// autoplay muted-then-unmute is what makes this reliable on iOS, where every
+// browser shares WebKit and <audio> autoplay — unlike <video> — doesn't
+// reliably start there without one. The sound toggle stays available
+// afterwards purely to mute/unmute; it never restarts playback.
 const music = $("#bg-music");
 const soundToggle = $("#sound-toggle");
 let musicReady = false;
@@ -714,11 +741,15 @@ function setSoundUI(playing) {
   soundToggle.firstElementChild.textContent = playing ? "♫" : "♪";
 }
 
-function primeMusic() {
-  if (musicReady) return;
+// The one-time switch that turns the music on, fired from the guest's first
+// genuine gesture (see beginJourney() and its callers). A no-op afterwards,
+// so it never re-forces sound back on if the guest has since muted it.
+function ensureMusicUnmuted() {
+  if (journeyStarted) return;
+  journeyStarted = true;
+  music.muted = false;
   musicReady = true;
-  music.muted = true;
-  music.play().catch(() => { musicReady = false; });
+  music.play().then(() => setSoundUI(true)).catch(() => { musicReady = false; });
 }
 
 // Keeps the music's own play/pause state mirrored to the film's: paused the
@@ -750,12 +781,11 @@ function restartFilmMusic() {
 }
 
 soundToggle.addEventListener("click", () => {
-  if (!musicReady) {
-    // Muted autoplay never got going (blocked, or the film hasn't started
-    // yet) — this click is a real gesture, so start it unmuted directly.
-    musicReady = true;
-    music.muted = false;
-    music.play().then(() => setSoundUI(true)).catch(() => { musicReady = false; });
+  if (!journeyStarted) {
+    // The very first gesture anywhere — including tapping this icon
+    // directly — begins the film too, so sound never plays over a frozen
+    // hero frame.
+    beginJourney();
     return;
   }
   music.muted = !music.muted;
