@@ -8,6 +8,13 @@ A cinematic, single-screen wedding invitation. Vanilla JS + Vite — no framewor
   internal clock with inertia and a grace period (`frame-player.js`), not a
   1:1 mapping of scroll position to frame. The browser scrollbar is kept in
   sync afterwards so it still feels like scrolling.
+- Fetching and decoding sprite sheets are decoupled (`frame-player.js`):
+  every sheet downloads in the background, in film order, starting the
+  moment the page opens — chapter 1's bytes are ready almost immediately,
+  and later chapters have already arrived by the time playback reaches them.
+  Only a small window of sheets around the current playhead is ever decoded
+  to a bitmap (that's the part that costs raw memory, ~36MB per sheet at
+  full resolution), so the whole film never needs to be resident at once.
 - A temple-rises-behind-the-text hero effect: a per-frame silhouette mask
   (`public/assets/hero-skyline.json`) clips the hero text to a shrinking sky
   region as the temple rises into frame.
@@ -46,4 +53,5 @@ Edit in [wedding-data.js](wedding-data.js):
 ## Notes
 
 - Only a desktop-resolution frame set is used (810×1440 tiles), for all
-  screen sizes — there's no separate lower-res mobile variant.
+  screen sizes — there's no separate lower-res mobile variant, and frames are
+  never downscaled on decode either (see the fetch/decode split above).

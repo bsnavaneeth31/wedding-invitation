@@ -1,41 +1,44 @@
-const PREFETCH_FRAMES = 100;
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 
-// Bounded decoded-frame cache. Eight frames share a WebP sheet, reducing
-// request overhead without retaining the whole film in memory.
+// Two independent layers, on purpose:
+//
+//  - FETCH (network): cheap. A compressed sprite sheet is ~500KB, and the
+//    whole film is only ~50MB, so we just download every sheet in the
+//    background, in film order, starting the moment the page opens — chapter
+//    1 arrives first, chapter 2 is already on the way while you watch it,
+//    and so on, the same shape as the old "load the next chapter while this
+//    one plays" idea, just done at the byte level instead of hand-tracking
+//    chapter boundaries (which comes for free since chapters are contiguous
+//    ranges of the same sheet order).
+//  - DECODE (CPU/GPU raster memory): expensive. A decoded 4x2 810x1440 sheet
+//    is ~36MB of raw pixels regardless of how its bytes were obtained, and
+//    that's what was crashing mobile tabs when too many stayed decoded at
+//    once. So only a handful of sheets around the current playhead are ever
+//    decoded — full native resolution, no downscaling — and everything
+//    outside that window gets its bitmap closed immediately. Re-entering an
+//    already-fetched sheet later just redecodes its cached bytes (fast, no
+//    network wait), it doesn't refetch.
 class FrameSheets {
-  constructor(manifest, variant, framesBase, onLoad, onError, options = {}) {
-    const { frameScale = 1, prefetchFrames = PREFETCH_FRAMES, maxConcurrentLoads = 8 } = options;
+  constructor(manifest, variant, framesBase, onDecode, onError, options = {}) {
+    const { decodeAhead = 3, decodeBehind = 1, fetchConcurrency = 6, decodeConcurrency = 2 } = options;
     this.framesBase = framesBase;
-    this.manifest = manifest;
     this.variant = variant;
     this.info = manifest.variants[variant];
-    this.frameScale = frameScale;
-    this.maxConcurrentLoads = maxConcurrentLoads;
     this.perSheet = manifest.columns * manifest.rows;
-    this.prefetchSheets = Math.min(
-      this.info.sheets,
-      Math.ceil(prefetchFrames / this.perSheet),
-    );
-    // Only used when createImageBitmap supports it (checked in FramePlayer):
-    // decoding a whole sheet at native res is columns*rows frames at once,
-    // e.g. a 4x2 810x1440 sheet decodes to ~37MB of raster memory. Mobile
-    // Safari's per-tab budget can't hold enough cached sheets at that size
-    // without crashing the tab, so on touch devices we decode sheets scaled
-    // down directly (cheaper than decoding full-res then downscaling).
-    this.decodeOptions = frameScale < 1
-      ? {
-          resizeWidth: Math.round(manifest.columns * this.info.width * frameScale),
-          resizeHeight: Math.round(manifest.rows * this.info.height * frameScale),
-          resizeQuality: "medium",
-        }
-      : null;
+    this.totalSheets = this.info.sheets;
+    this.decodeAhead = decodeAhead;
+    this.decodeBehind = decodeBehind;
+    this.fetchConcurrency = fetchConcurrency;
+    this.decodeConcurrency = decodeConcurrency;
+    this.blobs = new Map();
+    this.fetching = new Map();
+    this.fetchFailures = new Map();
+    this.fetchCursor = 0;
     this.cache = new Map();
-    this.loading = new Map();
-    this.failures = new Map();
+    this.decoding = new Set();
+    this.decodeFailures = new Map();
     this.wanted = [];
-    this.bootstrapEnd = 0;
-    this.onLoad = onLoad;
+    this.onDecode = onDecode;
     this.onError = onError;
     this.closed = false;
   }
@@ -44,80 +47,89 @@ class FrameSheets {
     return `${this.framesBase}/${this.variant}/${String(index).padStart(3, "0")}.webp`;
   }
 
-  bootstrap() {
-    this.bootstrapEnd = this.prefetchSheets;
-    this.pump();
-  }
-
-  clearBootstrap(atSheet) {
-    if (atSheet >= this.bootstrapEnd - 1) this.bootstrapEnd = 0;
-  }
-
-  keepInCache(index) {
-    return this.wanted.includes(index) || index < this.bootstrapEnd;
-  }
-
+  // The decode window: a handful of sheets either side of wherever playback
+  // currently is. Independent of how far ahead fetching has gotten.
   focus(sheet, direction = 1) {
     const dir = direction || 1;
     const wanted = [];
-    const behind = sheet - dir;
-    if (behind >= 0 && behind < this.info.sheets) wanted.push(behind);
-    for (let i = 0; i <= this.prefetchSheets; i++) {
+    const behind = sheet - dir * this.decodeBehind;
+    if (behind >= 0 && behind < this.totalSheets) wanted.push(behind);
+    for (let i = 0; i <= this.decodeAhead; i++) {
       const idx = sheet + i * dir;
-      if (idx >= 0 && idx < this.info.sheets) wanted.push(idx);
+      if (idx >= 0 && idx < this.totalSheets) wanted.push(idx);
     }
     if (wanted.join() === this.wanted.join()) return;
     this.wanted = wanted;
     for (const [index, bitmap] of this.cache) {
-      if (!this.keepInCache(index)) {
+      if (!wanted.includes(index)) {
         bitmap.close();
         this.cache.delete(index);
       }
     }
-    for (const [index, request] of this.loading) {
-      if (!this.keepInCache(index)) request.abort();
-    }
-    this.pump();
+    this.pumpDecode();
+    this.pumpFetch();
   }
 
-  maxConcurrent() {
-    return this.maxConcurrentLoads;
-  }
-
-  pump() {
+  pumpFetch() {
     if (this.closed) return;
-    const queue = [...new Set([...this.wanted, ...this.bootstrapIndices()])];
-    for (const index of queue) {
-      if (this.loading.size >= this.maxConcurrent()) break;
-      if (
-        this.cache.has(index) ||
-        this.loading.has(index) ||
-        this.failures.get(index) >= 3
-      )
-        continue;
-      const controller = new AbortController();
-      this.loading.set(index, controller);
-      this.load(index, controller);
+    // Priority: whatever the decode window needs right now that isn't
+    // downloaded yet (e.g. the guest jumped straight to a later chapter).
+    for (const index of this.wanted) {
+      if (this.fetching.size >= this.fetchConcurrency) return;
+      if (this.blobs.has(index) || this.fetching.has(index)) continue;
+      if ((this.fetchFailures.get(index) || 0) >= 3) continue;
+      this.fetchOne(index);
+    }
+    // Background: keep working through the rest of the film in order, so
+    // whatever chapter comes next has already arrived by the time playback
+    // gets there.
+    while (this.fetching.size < this.fetchConcurrency && this.fetchCursor < this.totalSheets) {
+      const index = this.fetchCursor++;
+      if (this.blobs.has(index) || this.fetching.has(index) || (this.fetchFailures.get(index) || 0) >= 3) continue;
+      this.fetchOne(index);
     }
   }
 
-  bootstrapIndices() {
-    if (!this.bootstrapEnd) return [];
-    return Array.from({ length: this.bootstrapEnd }, (_, index) => index);
-  }
-
-  async load(index, controller) {
-    let bitmap;
+  async fetchOne(index) {
+    const controller = new AbortController();
+    this.fetching.set(index, controller);
     try {
-      const response = await fetch(this.sheetUrl(index), {
-        signal: controller.signal,
-      });
+      const response = await fetch(this.sheetUrl(index), { signal: controller.signal });
       if (!response.ok) throw new Error(`Frame sheet ${response.status}`);
       const blob = await response.blob();
+      if (this.closed || controller.signal.aborted) return;
+      this.blobs.set(index, blob);
+      this.pumpDecode();
+    } catch (error) {
+      if (!controller.signal.aborted && !this.closed) {
+        const count = (this.fetchFailures.get(index) || 0) + 1;
+        this.fetchFailures.set(index, count);
+        if (count >= 3 && this.wanted.includes(index)) this.onError(error);
+      }
+    } finally {
+      this.fetching.delete(index);
+      this.pumpFetch();
+    }
+  }
+
+  pumpDecode() {
+    if (this.closed) return;
+    for (const index of this.wanted) {
+      if (this.decoding.size >= this.decodeConcurrency) return;
+      if (this.cache.has(index) || this.decoding.has(index)) continue;
+      if ((this.decodeFailures.get(index) || 0) >= 3) continue;
+      const blob = this.blobs.get(index);
+      if (!blob) continue; // Not fetched yet — fetchOne's completion retriggers this.
+      this.decodeOne(index, blob);
+    }
+  }
+
+  async decodeOne(index, blob) {
+    this.decoding.add(index);
+    try {
+      let bitmap;
       if ("createImageBitmap" in window) {
-        bitmap = this.decodeOptions
-          ? await createImageBitmap(blob, this.decodeOptions)
-          : await createImageBitmap(blob);
+        bitmap = await createImageBitmap(blob);
       } else {
         const url = URL.createObjectURL(blob);
         const image = new Image();
@@ -127,38 +139,30 @@ class FrameSheets {
         } finally {
           URL.revokeObjectURL(url);
         }
-        image.close = () => {
-          image.src = "";
-        };
+        image.close = () => { image.src = ""; };
         bitmap = image;
       }
-      if (
-        this.closed ||
-        controller.signal.aborted ||
-        !this.keepInCache(index)
-      )
-        bitmap.close();
+      if (this.closed || !this.wanted.includes(index)) bitmap.close();
       else {
         this.cache.set(index, bitmap);
-        this.onLoad();
+        this.onDecode();
       }
     } catch (error) {
-      if (!controller.signal.aborted && !this.closed) {
-        const count = (this.failures.get(index) || 0) + 1;
-        this.failures.set(index, count);
-        if (count >= 3) this.onError(error);
-      }
+      const count = (this.decodeFailures.get(index) || 0) + 1;
+      this.decodeFailures.set(index, count);
+      if (count >= 3) this.onError(error);
     } finally {
-      this.loading.delete(index);
-      this.pump();
+      this.decoding.delete(index);
+      this.pumpDecode();
     }
   }
 
   dispose() {
     this.closed = true;
-    for (const request of this.loading.values()) request.abort();
+    for (const controller of this.fetching.values()) controller.abort();
     for (const bitmap of this.cache.values()) bitmap.close();
     this.cache.clear();
+    this.blobs.clear();
   }
 }
 
@@ -208,10 +212,6 @@ export class FramePlayer {
       this.info = manifest.variants[this.variant];
       this.duration = this.info.count / this.fps;
       this.end = (this.info.count - 1) / this.fps;
-      // Decode at half resolution on touch devices to stay well under mobile
-      // Safari's per-tab memory ceiling (see FrameSheets) — see drawFrame,
-      // which scales the source rect to match.
-      this.frameScale = this.coarse && "createImageBitmap" in window ? 0.5 : 1;
       this.store = new FrameSheets(
         manifest,
         this.variant,
@@ -219,14 +219,14 @@ export class FramePlayer {
         () => this.onSheet(),
         (error) => this.fail(error),
         {
-          frameScale: this.frameScale,
-          prefetchFrames: this.coarse ? 48 : PREFETCH_FRAMES,
-          maxConcurrentLoads: this.coarse ? 4 : 8,
+          fetchConcurrency: this.coarse ? 4 : 8,
+          decodeConcurrency: 2,
+          decodeAhead: 3,
+          decodeBehind: 1,
         },
       );
       this.pendingJump = 0;
       this.store.focus(0);
-      this.store.bootstrap();
       this.resize();
     } catch (error) {
       this.fail(error);
@@ -304,13 +304,12 @@ export class FramePlayer {
     const bitmap = this.store.cache.get(sheet);
     if (!bitmap) return false;
     const cell = index % this.perSheet;
-    const scale = this.frameScale || 1;
     this.drawImage(
       bitmap,
-      (cell % this.columns) * this.info.width * scale,
-      Math.floor(cell / this.columns) * this.info.height * scale,
-      this.info.width * scale,
-      this.info.height * scale,
+      (cell % this.columns) * this.info.width,
+      Math.floor(cell / this.columns) * this.info.height,
+      this.info.width,
+      this.info.height,
     );
     this.frame = index;
     this.canvas.dataset.frame = String(index);
@@ -324,8 +323,6 @@ export class FramePlayer {
 
   intent(direction, grace = 550) {
     if (!this.ready || this.closed) return;
-    const sheet = Math.floor((this.time * this.fps) / this.perSheet);
-    this.store?.clearBootstrap(sheet);
     if (this.direction !== direction) this.lastTick = 0;
     const now = performance.now();
     if (now - this.lastIntent < 90)
@@ -415,9 +412,6 @@ export class FramePlayer {
   seek(time) {
     this.stop();
     if (!this.store) return;
-    this.store.clearBootstrap(
-      Math.floor((Math.max(0, Math.min(this.end, time)) * this.fps) / this.perSheet),
-    );
     this.pendingJump = Math.max(0, Math.min(this.end, time));
     const index = Math.round(this.pendingJump * this.fps);
     this.store.focus(Math.floor(index / this.perSheet));
