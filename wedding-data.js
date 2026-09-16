@@ -10,7 +10,7 @@ export const couple = {
 // details dialog rather than repeated on every event card.
 export const venue = {
   name: "Mandara Wedding And Events",
-  address: "Devagere Village, Kumbalagodu Gollahalli, Kengeri Hobli, Bengaluru - 560 074  ",
+  address: "Devagere Village, Kumbalagodu Gollahalli, Kengeri Hobli, Bengaluru - 560074  ",
   // Optional: paste a real Google Maps share link here for precision.
   // If left blank, a map link is auto-generated from name + address.
   mapUrl: "https://maps.app.goo.gl/rz9q2b2dMcxX6uDSA",
