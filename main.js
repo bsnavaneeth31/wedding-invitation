@@ -216,10 +216,12 @@ function loadFilm() {
       presented = time;
       updateChapter(time);
       syncScroll();
+      pulseFilmMusic();
     },
     onReady(film) {
       duration = film.duration;
       if (restoredPosition > .001) film.seek(restoredPosition * (duration - FRAME));
+      primeMusic();
       if (navMode === "auto" && !staticMode) runAutoplay();
     },
     onError() {
@@ -348,6 +350,7 @@ function tapNavigate(forward) {
   if (navMode === "auto" && autoplayDone && forward && activeChapter === 0) {
     autoplayDone = false;
     autoplayPaused = false;
+    restartFilmMusic();
     runAutoplay();
     updateFooterLabel(activeChapter);
     return;
@@ -550,6 +553,7 @@ function goToChapter(index) {
   // cut, not an animated rewind through the whole film. Landing on chapter
   // one via ordinary backward taps still glides, same as any other step.
   const wrapToStart = index >= copies.length;
+  if (wrapToStart) restartFilmMusic();
   const target = wrapToStart || index === 0
     ? 0
     : index === copies.length - 1
@@ -693,13 +697,16 @@ detailsDialog.addEventListener("close", () => {
   document.body.style.overflow = "";
 });
 
-// Background music. Browsers block audio-with-sound from starting until a
-// real user gesture, so this starts on the guest's first tap/click/keypress
-// anywhere on the page — auto mode's own skip/pause taps qualify too, no
-// separate "tap for sound" step needed unless the guest never interacts.
+// Background music. Browsers allow autoplay without a user gesture as long
+// as it's muted, so the music starts silently the moment the film itself
+// starts — it's always running in lockstep with the film from frame one.
+// The sound toggle then just flips .muted; it never restarts playback, so
+// whatever point the (silent) music has already reached is exactly where it
+// picks up out loud — no jump back to the start.
 const music = $("#bg-music");
 const soundToggle = $("#sound-toggle");
-let musicStarted = false;
+let musicReady = false;
+let musicIdleTimer = null;
 
 function setSoundUI(playing) {
   soundToggle.setAttribute("aria-pressed", String(playing));
@@ -707,22 +714,50 @@ function setSoundUI(playing) {
   soundToggle.firstElementChild.textContent = playing ? "♫" : "♪";
 }
 
-function startMusic() {
-  if (musicStarted) return;
-  musicStarted = true;
-  music.muted = false;
-  music.play().then(() => setSoundUI(true)).catch(() => { musicStarted = false; });
+function primeMusic() {
+  if (musicReady) return;
+  musicReady = true;
+  music.muted = true;
+  music.play().catch(() => { musicReady = false; });
 }
 
-function firstInteraction(event) {
-  if (event.target === soundToggle || soundToggle.contains(event.target)) return;
-  startMusic();
+// Keeps the music's own play/pause state mirrored to the film's: paused the
+// instant the film stops actively advancing (autoplay paused, tab
+// backgrounded, sitting still between taps) and resumed the instant it does
+// again. Without this the music — started once and left alone — would just
+// keep counting down on its own and could finish while the film was sitting
+// idle, or end up out of step with where the film visually is. Called from
+// the frame player's onFrame, so it only fires while frames are actually
+// being presented; a short idle window absorbs the gaps between frames
+// during normal playback.
+function pulseFilmMusic() {
+  if (!musicReady) return;
+  if (music.paused && !music.ended) music.play().catch(() => {});
+  clearTimeout(musicIdleTimer);
+  musicIdleTimer = setTimeout(() => {
+    if (!music.paused) music.pause();
+  }, 220);
 }
-document.addEventListener("pointerdown", firstInteraction, { once: true, passive: true });
-document.addEventListener("keydown", firstInteraction, { once: true });
+
+// Called whenever the film loops back to its very beginning and starts
+// playing again. If sound is on, the music restarts in step with it. If
+// muted, it's left exactly as-is — no reset — so that unmuting later resumes
+// at whatever point it's naturally reached rather than jumping to zero.
+function restartFilmMusic() {
+  if (!musicReady || music.muted) return;
+  music.currentTime = 0;
+  music.play().catch(() => {});
+}
 
 soundToggle.addEventListener("click", () => {
-  if (!musicStarted) { startMusic(); return; }
+  if (!musicReady) {
+    // Muted autoplay never got going (blocked, or the film hasn't started
+    // yet) — this click is a real gesture, so start it unmuted directly.
+    musicReady = true;
+    music.muted = false;
+    music.play().then(() => setSoundUI(true)).catch(() => { musicReady = false; });
+    return;
+  }
   music.muted = !music.muted;
   setSoundUI(!music.muted);
 });

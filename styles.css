@@ -233,8 +233,8 @@ html.nav-auto .film-region, html.nav-auto .copy-region { cursor: pointer; }
 .chapter-copy[data-start='44'] { justify-content: flex-end; padding-bottom: 13svh; }
 .chapter-copy[data-start='44']::before { background: linear-gradient(0deg, #0b1115bb, transparent 95%); }
 .film-events { margin-top: 20px; display: grid; gap: 12px; text-align: left; }
-.film-events p { font: 18px var(--serif); color: #fff7e8; text-shadow: 0 1px 10px #000; }
-.film-events span { display: inline-block; width: 150px; color: #e7cfaa; font: 9px var(--sans); letter-spacing: .06em; text-transform: uppercase; }
+.film-events p { font: 28px var(--serif); color: #fff7e8; text-shadow: 0 1px 10px #000; }
+.film-events span { display: inline-block; width: 150px; color: #e7cfaa; font: 14px var(--sans); letter-spacing: .06em; text-transform: uppercase; }
 .chapter-copy .text-link { color: #f5e6cf; }
 .chapter-nav { position: absolute; right: 20px; top: 50%; transform: translateY(-50%); z-index: 4; }
 .chapter-nav span { color: #fff9ec; text-shadow: 0 1px 8px #000; }
@@ -258,8 +258,8 @@ html.nav-auto .film-region, html.nav-auto .copy-region { cursor: pointer; }
   .chapter-copy[data-start='0'] { padding-top: 11svh; }
   .chapter-copy[data-start='0'] .copy-note { margin-top: 13px; }
   .chapter-copy .eyebrow { font-size: 8px; max-width: 30em; }
-  .film-events p { font-size: 16px; }
-  .film-events span { width: 126px; font-size: 8px; }
+  .film-events p { font-size: 19px; }
+  .film-events span { width: 126px; font-size: 12px; }
   .media-status { position: absolute; bottom: 44px; top: auto; left: 0; font-size: 9px; }
 }
 @media (orientation: landscape) and (max-height: 600px) {
