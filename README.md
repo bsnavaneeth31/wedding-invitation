@@ -1,6 +1,6 @@
 # Pallavi & Navaneeth — wedding invitation
 
-A cinematic, single-screen wedding invitation. Vanilla JS + Vite — no framework.
+A cinematic, single-screen wedding invitation. Vanilla JS + Vite — no framework.  
 
 ## Included
 
