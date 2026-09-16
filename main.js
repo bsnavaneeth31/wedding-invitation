@@ -692,3 +692,37 @@ $("#close-details").addEventListener("click", () => detailsDialog.close());
 detailsDialog.addEventListener("close", () => {
   document.body.style.overflow = "";
 });
+
+// Background music. Browsers block audio-with-sound from starting until a
+// real user gesture, so this starts on the guest's first tap/click/keypress
+// anywhere on the page — auto mode's own skip/pause taps qualify too, no
+// separate "tap for sound" step needed unless the guest never interacts.
+const music = $("#bg-music");
+const soundToggle = $("#sound-toggle");
+let musicStarted = false;
+
+function setSoundUI(playing) {
+  soundToggle.setAttribute("aria-pressed", String(playing));
+  soundToggle.setAttribute("aria-label", playing ? "Mute background music" : "Play background music");
+  soundToggle.firstElementChild.textContent = playing ? "♫" : "♪";
+}
+
+function startMusic() {
+  if (musicStarted) return;
+  musicStarted = true;
+  music.muted = false;
+  music.play().then(() => setSoundUI(true)).catch(() => { musicStarted = false; });
+}
+
+function firstInteraction(event) {
+  if (event.target === soundToggle || soundToggle.contains(event.target)) return;
+  startMusic();
+}
+document.addEventListener("pointerdown", firstInteraction, { once: true, passive: true });
+document.addEventListener("keydown", firstInteraction, { once: true });
+
+soundToggle.addEventListener("click", () => {
+  if (!musicStarted) { startMusic(); return; }
+  music.muted = !music.muted;
+  setSoundUI(!music.muted);
+});

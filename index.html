@@ -21,8 +21,12 @@
       <div class="journey-stage">
         <header class="site-header">
           <span class="header-place">20 – 21 October 2026</span>
+          <button type="button" id="sound-toggle" class="sound-toggle" aria-label="Play background music" aria-pressed="false">
+            <span aria-hidden="true">♪</span>
+          </button>
           <a class="header-link" href="#celebrations">The celebrations <span aria-hidden="true">↗</span></a>
         </header>
+        <audio id="bg-music" src="/assets/nanna.mp3" loop preload="auto"></audio>
         <div class="film-region">
           <div class="film-border"><canvas id="journey-video" role="img" aria-label="Journey from the temple entrance through carved corridors to an arch overlooking the sea"></canvas></div>
           <span class="film-side-note" aria-hidden="true">Stone. Sea. Something eternal.</span>
