@@ -20,7 +20,7 @@ const heroContent = $(".hero-content");
 let skyline = null;
 let stageWidth = 0;
 let stageHeight = 0;
-let duration = 50.416667;
+let duration = 48.833333;
 let presented = 0;
 let activeChapter = -1;
 let staticMode = false;
@@ -329,6 +329,12 @@ function finishAutoplay() {
 function skipAutoplay() {
   if (navMode !== "auto" || autoplayDone) return;
   ensureMusicUnmuted();
+  // A single instant seek only pulses pulseFilmMusic() once, so the 220ms
+  // idle timer pauses the music again almost immediately — leaving it
+  // stranded wherever it happened to be when skip was pressed. Jump it to
+  // its own end too, so the film and the music are at rest together, and a
+  // later backward tap resumes it from the right place instead of a stale one.
+  if (musicReady && music.duration) music.currentTime = music.duration;
   player?.seek(Math.max(0, duration - FRAME));
   finishAutoplay();
 }
@@ -581,7 +587,12 @@ function goToChapter(index) {
     : index === copies.length - 1
       ? Math.max(0, duration - FRAME) // the true final frame, not just "into" the last scene
       : starts[index] + .9;
-  if (tapLike() && !wrapToStart) animateTo(target, { speed: TAP_TRANSITION_SPEED });
+  // Once the guest has already seen the film play through once (or skipped
+  // it), left/right taps are revisiting chapters they've watched — a direct
+  // cut respects that instead of replaying the glide. The glide is kept for
+  // the standalone ?nav=tap testing mode and for the initial playthrough.
+  const postAutoplay = navMode === "auto" && autoplayDone;
+  if (tapLike() && !wrapToStart && !postAutoplay) animateTo(target, { speed: TAP_TRANSITION_SPEED });
   else player.seek(target);
 }
 chapterButtons.forEach(button => button.addEventListener("click", () => goToChapter(Number(button.dataset.chapter))));

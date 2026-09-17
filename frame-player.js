@@ -1,6 +1,35 @@
 const PREFETCH_FRAMES = 100;
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 
+// The source film repeats two short duplicate camera passes: one inside
+// "The light", the other right at the "The gathering" -> "The horizon"
+// exit. Skip only those duplicate ranges at playback time, keeping the
+// original WebP assets untouched. Each join point is where the two takes
+// have the closest framing, so there's no visible morph/warp/jump — just
+// the duplicate pass removed.
+const FRAME_CUTS = Object.freeze({
+  light: { logicalEnd: 529, sourceResume: 584, removed: 54 },
+  gathering: { logicalEnd: 766, sourceResume: 893, removed: 72 },
+});
+const REMOVED_FRAMES = FRAME_CUTS.light.removed + FRAME_CUTS.gathering.removed;
+// Hold the untouched final source frame for ~3.67s so the 46.776s background
+// track (music.mp3) always finishes naturally before the visual journey
+// settles, instead of getting cut off by a shorter film.
+const END_HOLD_FRAMES = 88;
+
+function contentFrameCount(sourceCount) {
+  return Math.max(1, sourceCount - REMOVED_FRAMES);
+}
+
+function sourceFrameFor(logicalFrame, sourceCount) {
+  const contentCount = contentFrameCount(sourceCount);
+  if (logicalFrame >= contentCount) return sourceCount - 1;
+  if (logicalFrame <= FRAME_CUTS.light.logicalEnd) return logicalFrame;
+  if (logicalFrame <= FRAME_CUTS.gathering.logicalEnd)
+    return logicalFrame + FRAME_CUTS.light.removed;
+  return logicalFrame + REMOVED_FRAMES;
+}
+
 // Bounded decoded-frame cache. Eight frames share a WebP sheet, reducing
 // request overhead without retaining the whole film in memory.
 class FrameSheets {
@@ -206,8 +235,10 @@ export class FramePlayer {
       this.coarse = matchMedia("(pointer: coarse)").matches || innerWidth < 900;
       this.rate = this.coarse ? 1.6 : 2.2;
       this.info = manifest.variants[this.variant];
-      this.duration = this.info.count / this.fps;
-      this.end = (this.info.count - 1) / this.fps;
+      this.sourceCount = this.info.count;
+      this.count = contentFrameCount(this.sourceCount) + END_HOLD_FRAMES;
+      this.duration = this.count / this.fps;
+      this.end = (this.count - 1) / this.fps;
       // Decode at half resolution on touch devices to stay well under mobile
       // Safari's per-tab memory ceiling (see FrameSheets) — see drawFrame,
       // which scales the source rect to match.
@@ -298,12 +329,24 @@ export class FramePlayer {
     );
   }
 
+  sourceFrame(index) {
+    return sourceFrameFor(
+      Math.max(0, Math.min(this.count - 1, index)),
+      this.sourceCount,
+    );
+  }
+
+  sourceSheet(index) {
+    return Math.floor(this.sourceFrame(index) / this.perSheet);
+  }
+
   drawFrame(index, force = false) {
     if (!force && index === this.frame) return true;
-    const sheet = Math.floor(index / this.perSheet);
+    const source = this.sourceFrame(index);
+    const sheet = Math.floor(source / this.perSheet);
     const bitmap = this.store.cache.get(sheet);
     if (!bitmap) return false;
-    const cell = index % this.perSheet;
+    const cell = source % this.perSheet;
     const scale = this.frameScale || 1;
     this.drawImage(
       bitmap,
@@ -324,7 +367,7 @@ export class FramePlayer {
 
   intent(direction, grace = 550) {
     if (!this.ready || this.closed) return;
-    const sheet = Math.floor((this.time * this.fps) / this.perSheet);
+    const sheet = this.sourceSheet(this.time * this.fps);
     this.store?.clearBootstrap(sheet);
     if (this.direction !== direction) this.lastTick = 0;
     const now = performance.now();
@@ -336,7 +379,7 @@ export class FramePlayer {
     this.until = performance.now() + grace;
     this.canvas.dataset.playing = "true";
     this.store.focus(
-      Math.floor((this.time * this.fps) / this.perSheet),
+      this.sourceSheet(this.time * this.fps),
       direction,
     );
     this.wake();
@@ -351,7 +394,7 @@ export class FramePlayer {
     this.stop();
     const next = clamp(this.time + deltaTime, 0, this.end);
     const index = Math.round(next * this.fps);
-    this.store.focus(Math.floor(index / this.perSheet), Math.sign(deltaTime));
+    this.store.focus(this.sourceSheet(index), Math.sign(deltaTime));
     this.time = next;
     if (this.drawFrame(index)) {
       this.pendingJump = null;
@@ -386,7 +429,7 @@ export class FramePlayer {
       ),
     );
     const index = Math.round(next * this.fps);
-    this.store.focus(Math.floor(index / this.perSheet), this.direction);
+    this.store.focus(this.sourceSheet(index), this.direction);
     if (this.drawFrame(index)) this.time = next;
     else {
       // Buffer in place; never jump ahead to catch up with elapsed network time.
@@ -416,11 +459,11 @@ export class FramePlayer {
     this.stop();
     if (!this.store) return;
     this.store.clearBootstrap(
-      Math.floor((Math.max(0, Math.min(this.end, time)) * this.fps) / this.perSheet),
+      this.sourceSheet(Math.max(0, Math.min(this.end, time)) * this.fps),
     );
     this.pendingJump = Math.max(0, Math.min(this.end, time));
     const index = Math.round(this.pendingJump * this.fps);
-    this.store.focus(Math.floor(index / this.perSheet));
+    this.store.focus(this.sourceSheet(index));
     this.onSheet();
   }
 
