@@ -1,5 +1,5 @@
 import { couple, venue, events } from "./wedding-data.js";
-import { FRAMES_BASE, POSTER } from "./demo-config.js";
+import { FILM_SRC, POSTER } from "./demo-config.js";
 import { FramePlayer } from "./frame-player.js";
 
 const $ = selector => document.querySelector(selector);
@@ -220,7 +220,7 @@ function loadFilm() {
   updateChapter(0);
   player = new FramePlayer({
     canvas, status,
-    framesBase: FRAMES_BASE,
+    src: FILM_SRC,
     poster: POSTER,
     onFrame(time) {
       presented = time;
