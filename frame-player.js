@@ -46,6 +46,16 @@ export class FramePlayer {
       this.video.muted = true;
       this.video.playsInline = true;
       this.video.preload = "auto";
+      // Chrome (desktop and Android) is much stricter than Safari about
+      // decoding/presenting frames from a <video> that's never been part of
+      // the document — a detached element can end up stuck showing only its
+      // first decoded frame no matter how often currentTime changes. Kept
+      // in the DOM but fully invisible/inert; the canvas is what's actually
+      // shown, this is only ever a decode source for it.
+      this.video.style.cssText = "position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;";
+      this.video.setAttribute("aria-hidden", "true");
+      this.video.tabIndex = -1;
+      document.body.appendChild(this.video);
       this.video.src = this.src;
       // Event-driven stall tracking, not polled per scrub() call: .seeking
       // flips true synchronously after almost any currentTime assignment
@@ -287,6 +297,7 @@ export class FramePlayer {
       this.video.pause();
       this.video.removeAttribute("src");
       this.video.load();
+      this.video.remove();
     }
   }
 }
