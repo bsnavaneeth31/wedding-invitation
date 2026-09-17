@@ -1,192 +1,42 @@
-const PREFETCH_FRAMES = 100;
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+// Kept a hair short of the real video duration when clamping seeks — seeking
+// to the exact end can land past the last decodable frame on some browsers.
+const END_EPSILON = 1 / 24;
 
-// Bounded decoded-frame cache. Eight frames share a WebP sheet, reducing
-// request overhead without retaining the whole film in memory.
-class FrameSheets {
-  constructor(manifest, variant, framesBase, onLoad, onError, options = {}) {
-    const { frameScale = 1, prefetchFrames = PREFETCH_FRAMES, maxConcurrentLoads = 8 } = options;
-    this.framesBase = framesBase;
-    this.manifest = manifest;
-    this.variant = variant;
-    this.info = manifest.variants[variant];
-    this.frameScale = frameScale;
-    this.maxConcurrentLoads = maxConcurrentLoads;
-    this.perSheet = manifest.columns * manifest.rows;
-    this.prefetchSheets = Math.min(
-      this.info.sheets,
-      Math.ceil(prefetchFrames / this.perSheet),
-    );
-    // Only used when createImageBitmap supports it (checked in FramePlayer):
-    // decoding a whole sheet at native res is columns*rows frames at once,
-    // e.g. a 4x2 810x1440 sheet decodes to ~37MB of raster memory. Mobile
-    // Safari's per-tab budget can't hold enough cached sheets at that size
-    // without crashing the tab, so on touch devices we decode sheets scaled
-    // down directly (cheaper than decoding full-res then downscaling).
-    this.decodeOptions = frameScale < 1
-      ? {
-          resizeWidth: Math.round(manifest.columns * this.info.width * frameScale),
-          resizeHeight: Math.round(manifest.rows * this.info.height * frameScale),
-          resizeQuality: "medium",
-        }
-      : null;
-    this.cache = new Map();
-    this.loading = new Map();
-    this.failures = new Map();
-    this.wanted = [];
-    this.bootstrapEnd = 0;
-    this.onLoad = onLoad;
-    this.onError = onError;
-    this.closed = false;
-  }
-
-  sheetUrl(index) {
-    return `${this.framesBase}/${this.variant}/${String(index).padStart(3, "0")}.webp`;
-  }
-
-  bootstrap() {
-    this.bootstrapEnd = this.prefetchSheets;
-    this.pump();
-  }
-
-  clearBootstrap(atSheet) {
-    if (atSheet >= this.bootstrapEnd - 1) this.bootstrapEnd = 0;
-  }
-
-  keepInCache(index) {
-    return this.wanted.includes(index) || index < this.bootstrapEnd;
-  }
-
-  focus(sheet, direction = 1) {
-    const dir = direction || 1;
-    const wanted = [];
-    const behind = sheet - dir;
-    if (behind >= 0 && behind < this.info.sheets) wanted.push(behind);
-    for (let i = 0; i <= this.prefetchSheets; i++) {
-      const idx = sheet + i * dir;
-      if (idx >= 0 && idx < this.info.sheets) wanted.push(idx);
-    }
-    if (wanted.join() === this.wanted.join()) return;
-    this.wanted = wanted;
-    for (const [index, bitmap] of this.cache) {
-      if (!this.keepInCache(index)) {
-        bitmap.close();
-        this.cache.delete(index);
-      }
-    }
-    for (const [index, request] of this.loading) {
-      if (!this.keepInCache(index)) request.abort();
-    }
-    this.pump();
-  }
-
-  maxConcurrent() {
-    return this.maxConcurrentLoads;
-  }
-
-  pump() {
-    if (this.closed) return;
-    const queue = [...new Set([...this.wanted, ...this.bootstrapIndices()])];
-    for (const index of queue) {
-      if (this.loading.size >= this.maxConcurrent()) break;
-      if (
-        this.cache.has(index) ||
-        this.loading.has(index) ||
-        this.failures.get(index) >= 3
-      )
-        continue;
-      const controller = new AbortController();
-      this.loading.set(index, controller);
-      this.load(index, controller);
-    }
-  }
-
-  bootstrapIndices() {
-    if (!this.bootstrapEnd) return [];
-    return Array.from({ length: this.bootstrapEnd }, (_, index) => index);
-  }
-
-  async load(index, controller) {
-    let bitmap;
-    try {
-      const response = await fetch(this.sheetUrl(index), {
-        signal: controller.signal,
-      });
-      if (!response.ok) throw new Error(`Frame sheet ${response.status}`);
-      const blob = await response.blob();
-      if ("createImageBitmap" in window) {
-        bitmap = this.decodeOptions
-          ? await createImageBitmap(blob, this.decodeOptions)
-          : await createImageBitmap(blob);
-      } else {
-        const url = URL.createObjectURL(blob);
-        const image = new Image();
-        image.src = url;
-        try {
-          await image.decode();
-        } finally {
-          URL.revokeObjectURL(url);
-        }
-        image.close = () => {
-          image.src = "";
-        };
-        bitmap = image;
-      }
-      if (
-        this.closed ||
-        controller.signal.aborted ||
-        !this.keepInCache(index)
-      )
-        bitmap.close();
-      else {
-        this.cache.set(index, bitmap);
-        this.onLoad();
-      }
-    } catch (error) {
-      if (!controller.signal.aborted && !this.closed) {
-        const count = (this.failures.get(index) || 0) + 1;
-        this.failures.set(index, count);
-        if (count >= 3) this.onError(error);
-      }
-    } finally {
-      this.loading.delete(index);
-      this.pump();
-    }
-  }
-
-  dispose() {
-    this.closed = true;
-    for (const request of this.loading.values()) request.abort();
-    for (const bitmap of this.cache.values()) bitmap.close();
-    this.cache.clear();
-  }
-}
-
+// A single hardware-decoded <video> element standing in for what used to be
+// a JS-decoded WebP sprite-sheet sequence. All the duplicate-footage cuts
+// and the end-of-film hold that frame-player.js used to compute at runtime
+// are now baked directly into the encoded video's timeline during the
+// export pass (see scripts.tmp/), so this class only ever deals in plain
+// seconds — no frame-index/source-frame remapping left to do here.
 export class FramePlayer {
-  constructor({ canvas, status, framesBase = "/assets/frames", poster, onFrame, onReady, onError }) {
+  constructor({ canvas, status, src, poster, onFrame, onReady, onError }) {
     this.canvas = canvas;
     this.context = canvas.getContext("2d", { alpha: false });
-    this.framesBase = framesBase;
+    this.src = src;
     this.status = status;
     this.onFrame = onFrame;
     this.onReady = onReady;
     this.onError = onError;
     this.time = 0;
     this.direction = 0;
-    this.coarse = matchMedia("(pointer: coarse)").matches || innerWidth < 900;
-    this.rate = this.coarse ? 3.6 : 2.2;
+    this.rate = (matchMedia("(pointer: coarse)").matches || innerWidth < 900) ? 3.6 : 2.2;
     this.boost = 1;
     this.lastIntent = 0;
-    this.frame = -1;
     this.raf = 0;
     this.until = 0;
     this.lastTick = 0;
-    this.pendingJump = null;
+    this.waitSince = 0;
+    this.ready = false;
+    this.closed = false;
+    this.pendingJump = 0;
+    this.seekToken = 0;
+    this.playRaf = 0;
     if (poster) {
       this.poster = new Image();
       this.poster.src = poster;
       this.poster.onload = () => {
-        if (this.frame < 0) this.drawPoster();
+        if (!this.ready) this.drawPoster();
       };
     }
     this.resize();
@@ -194,58 +44,96 @@ export class FramePlayer {
 
   async load() {
     try {
-      const response = await fetch(`${this.framesBase}/manifest.json`);
-      if (!response.ok) throw new Error("Frame manifest unavailable");
-      const manifest = await response.json();
+      this.video = document.createElement("video");
+      this.video.muted = true;
+      this.video.playsInline = true;
+      this.video.preload = "auto";
+      // Chrome (desktop and Android) is much stricter than Safari about
+      // decoding/presenting frames from a <video> that's never been part of
+      // the document — a detached element can end up stuck showing only its
+      // first decoded frame no matter how often currentTime changes. Kept
+      // in the DOM but fully invisible/inert; the canvas is what's actually
+      // shown, this is only ever a decode source for it.
+      this.video.style.cssText = "position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;";
+      this.video.setAttribute("aria-hidden", "true");
+      this.video.tabIndex = -1;
+      document.body.appendChild(this.video);
+      this.video.src = this.src;
+      // Event-driven stall tracking, not polled per scrub() call: .seeking
+      // flips true synchronously after almost any currentTime assignment
+      // (even ones that resolve instantly), so checking it right after
+      // setting currentTime flags routine seeks as "stalled." "waiting" only
+      // fires when the browser genuinely can't proceed for lack of data, and
+      // "seeked" always eventually fires for whatever the latest target is
+      // once the browser catches up — even if we've since moved on to a
+      // newer target — so this can't get stuck the way per-call polling did.
+      this.video.addEventListener("waiting", () => {
+        if (!this.waitSince) this.waitSince = performance.now();
+      });
+      this.video.addEventListener("seeked", () => {
+        this.waitSince = 0;
+        this.status.textContent = "";
+      });
+      const metadataReady = new Promise((resolve, reject) => {
+        this.video.addEventListener("loadedmetadata", resolve, { once: true });
+        this.video.addEventListener("error", () => reject(new Error("Film failed to load")), { once: true });
+      });
+      this.video.load();
+      await metadataReady;
       if (this.closed) return;
-      this.fps = manifest.fps;
-      this.perSheet = manifest.columns * manifest.rows;
-      this.columns = manifest.columns;
-      // Only a desktop-resolution frame set is available for this invitation.
-      this.variant = "desktop";
-      this.coarse = matchMedia("(pointer: coarse)").matches || innerWidth < 900;
-      this.rate = this.coarse ? 1.6 : 2.2;
-      this.info = manifest.variants[this.variant];
-      this.duration = this.info.count / this.fps;
-      this.end = (this.info.count - 1) / this.fps;
-      // Decode at half resolution on touch devices to stay well under mobile
-      // Safari's per-tab memory ceiling (see FrameSheets) — see drawFrame,
-      // which scales the source rect to match.
-      this.frameScale = this.coarse && "createImageBitmap" in window ? 0.5 : 1;
-      this.store = new FrameSheets(
-        manifest,
-        this.variant,
-        this.framesBase,
-        () => this.onSheet(),
-        (error) => this.fail(error),
-        {
-          frameScale: this.frameScale,
-          prefetchFrames: this.coarse ? 48 : PREFETCH_FRAMES,
-          maxConcurrentLoads: this.coarse ? 4 : 8,
-        },
-      );
-      this.pendingJump = 0;
-      this.store.focus(0);
-      this.store.bootstrap();
+      this.duration = this.video.duration;
+      this.end = Math.max(0, this.duration - END_EPSILON);
       this.resize();
+      await this.warmUpDecoder();
+      const startAt = clamp(this.pendingJump ?? 0, 0, this.end);
+      await this.seekAndWait(startAt);
+      if (this.closed) return;
+      this.time = startAt;
+      this.pendingJump = null;
+      this.ready = true;
+      this.render(startAt);
+      this.onReady(this);
     } catch (error) {
       this.fail(error);
     }
   }
 
-  onSheet() {
-    if (this.pendingJump !== null) {
-      const index = Math.round(this.pendingJump * this.fps);
-      if (this.drawFrame(index)) {
-        this.time = this.pendingJump;
-        this.pendingJump = null;
-        if (!this.ready) {
-          this.ready = true;
-          this.onReady(this);
-        }
-      }
+  // On some mobile browsers (Android Chrome especially), a <video> that has
+  // never had play() called doesn't actually decode a new frame just
+  // because currentTime changed — it keeps showing whatever was last
+  // decoded (nothing, for a fresh element), so every subsequent seek looks
+  // like it "worked" (time advances, seeked fires) while the picture never
+  // moves. Desktop Chrome and iOS Safari don't need this nudge, which is
+  // exactly why it only shows up on real Android hardware after deploy. A
+  // brief play/pause activates the decode pipeline before we rely on it.
+  async warmUpDecoder() {
+    try {
+      await this.video.play();
+      this.video.pause();
+    } catch {
+      // Autoplay blocked (rare for a muted video) — falls back to whatever
+      // the browser does by default; not fatal.
     }
-    this.wake();
+  }
+
+  seekAndWait(target) {
+    return new Promise((resolve) => {
+      // Setting currentTime to the value it already holds (e.g. the initial
+      // 0 -> 0 "seek" right after load) never fires "seeked" — there's
+      // nothing to seek to. Resolve directly once there's decoded data for
+      // the current position instead of waiting on an event that won't come.
+      if (Math.abs(this.video.currentTime - target) < 0.005) {
+        if (this.video.readyState >= 2) { resolve(); return; }
+        this.video.addEventListener("loadeddata", () => resolve(), { once: true });
+        return;
+      }
+      const onSeeked = () => {
+        this.video.removeEventListener("seeked", onSeeked);
+        resolve();
+      };
+      this.video.addEventListener("seeked", onSeeked);
+      this.video.currentTime = target;
+    });
   }
 
   resize() {
@@ -253,7 +141,7 @@ export class FramePlayer {
     this.width = Math.max(1, rect.width);
     this.height = Math.max(1, rect.height);
     const nativeDpr = devicePixelRatio || 1;
-    const frameW = this.info?.width || this.width;
+    const frameW = this.video?.videoWidth || this.width;
     const sharpDpr = frameW / this.width;
     const dpr = Math.min(nativeDpr, Math.max(1, sharpDpr), 3);
     this.canvas.width = Math.round(this.width * dpr);
@@ -264,19 +152,13 @@ export class FramePlayer {
     this.drawHeight = this.height;
     this.context.imageSmoothingEnabled = true;
     this.context.imageSmoothingQuality = "high";
-    if (this.frame >= 0 && this.store) this.drawFrame(this.frame, true);
+    if (this.ready) this.drawCurrentFrame();
     else this.drawPoster();
   }
 
   drawPoster() {
-    if (!this.poster.complete || !this.poster.naturalWidth) return;
-    this.drawImage(
-      this.poster,
-      0,
-      0,
-      this.poster.naturalWidth,
-      this.poster.naturalHeight,
-    );
+    if (!this.poster?.complete || !this.poster.naturalWidth) return;
+    this.drawImage(this.poster, 0, 0, this.poster.naturalWidth, this.poster.naturalHeight);
   }
 
   drawImage(image, sx, sy, width, height) {
@@ -287,81 +169,65 @@ export class FramePlayer {
     const dy = (this.drawHeight - dh) / 2;
     this.context.drawImage(
       image,
-      sx,
-      sy,
-      width,
-      height,
-      Math.round(dx),
-      Math.round(dy),
-      Math.round(dw),
-      Math.round(dh),
+      sx, sy, width, height,
+      Math.round(dx), Math.round(dy), Math.round(dw), Math.round(dh),
     );
   }
 
-  drawFrame(index, force = false) {
-    if (!force && index === this.frame) return true;
-    const sheet = Math.floor(index / this.perSheet);
-    const bitmap = this.store.cache.get(sheet);
-    if (!bitmap) return false;
-    const cell = index % this.perSheet;
-    const scale = this.frameScale || 1;
-    this.drawImage(
-      bitmap,
-      (cell % this.columns) * this.info.width * scale,
-      Math.floor(cell / this.columns) * this.info.height * scale,
-      this.info.width * scale,
-      this.info.height * scale,
-    );
-    this.frame = index;
-    this.canvas.dataset.frame = String(index);
-    this.canvas.dataset.time = String(index / this.fps);
-    this.canvas.dataset.cachedSheets = String(this.store.cache.size);
+  drawCurrentFrame() {
+    if (!this.video?.videoWidth) return false;
+    this.drawImage(this.video, 0, 0, this.video.videoWidth, this.video.videoHeight);
+    return true;
+  }
+
+  render(time) {
+    this.drawCurrentFrame();
+    this.canvas.dataset.time = String(time);
     this.status.textContent = "";
     this.waitSince = 0;
-    this.onFrame(index / this.fps);
-    return true;
+    this.onFrame(time);
+  }
+
+  // this.waitSince is set/cleared by the video's own "waiting"/"seeked"
+  // events (see load()) — this just surfaces a status message once a
+  // genuine stall has run long enough to be worth telling the guest about.
+  // animateTo() in main.js also reads player.waitSince directly to hold its
+  // tween target still instead of racing ahead of what's actually decoded.
+  reportStallIfSlow(now) {
+    if (this.waitSince && now - this.waitSince > 400) {
+      this.status.textContent = "Loading the next moment…";
+    }
   }
 
   intent(direction, grace = 550) {
     if (!this.ready || this.closed) return;
-    const sheet = Math.floor((this.time * this.fps) / this.perSheet);
-    this.store?.clearBootstrap(sheet);
     if (this.direction !== direction) this.lastTick = 0;
     const now = performance.now();
-    if (now - this.lastIntent < 90)
-      this.boost = Math.min(1.75, this.boost + 0.2);
+    if (now - this.lastIntent < 90) this.boost = Math.min(1.75, this.boost + 0.2);
     else this.boost = 1;
     this.lastIntent = now;
     this.direction = direction;
-    this.until = performance.now() + grace;
+    this.until = now + grace;
     this.canvas.dataset.playing = "true";
-    this.store.focus(
-      Math.floor((this.time * this.fps) / this.perSheet),
-      direction,
-    );
     this.wake();
   }
 
   // Direct, proportional response to a wheel/touch gesture: the film moves
-  // exactly as far as the input says, with no timed "play until grace expires"
-  // indirection. This is what makes continuous input (trackpad, finger drag)
-  // feel 1:1 instead of laggy.
+  // exactly as far as the input says. Draws whatever the video currently has
+  // decoded rather than waiting on a "seeked" event per call — with the
+  // short keyframe interval baked into the export, that's visually caught
+  // up within a frame or two, and it's what keeps continuous scrubbing 1:1
+  // instead of laggy.
   scrub(deltaTime) {
     if (!this.ready || this.closed || !deltaTime) return;
     this.stop();
     const next = clamp(this.time + deltaTime, 0, this.end);
-    const index = Math.round(next * this.fps);
-    this.store.focus(Math.floor(index / this.perSheet), Math.sign(deltaTime));
     this.time = next;
-    if (this.drawFrame(index)) {
-      this.pendingJump = null;
-      this.waitSince = 0;
-    } else {
-      this.pendingJump = next;
-      if (!this.waitSince) this.waitSince = performance.now();
-      else if (performance.now() - this.waitSince > 400)
-        this.status.textContent = "Loading the next moment…";
-    }
+    this.video.currentTime = next;
+    this.drawCurrentFrame();
+    this.canvas.dataset.time = String(next);
+    this.reportStallIfSlow(performance.now());
+    this.onFrame(next);
   }
 
   wake() {
@@ -378,26 +244,15 @@ export class FramePlayer {
     }
     const dt = this.lastTick ? Math.min((now - this.lastTick) / 1000, 0.06) : 0;
     this.lastTick = now;
-    const next = Math.max(
-      0,
-      Math.min(
-        this.end,
-        this.time + this.direction * this.rate * this.boost * dt,
-      ),
-    );
-    const index = Math.round(next * this.fps);
-    this.store.focus(Math.floor(index / this.perSheet), this.direction);
-    if (this.drawFrame(index)) this.time = next;
-    else {
-      // Buffer in place; never jump ahead to catch up with elapsed network time.
-      if (!this.waitSince) this.waitSince = now;
-      if (now - this.waitSince > 400)
-        this.status.textContent = "Loading the next moment…";
-    }
-    const atBoundary =
-      (this.direction < 0 && next === 0) ||
-      (this.direction > 0 && next === this.end);
-    if (atBoundary && index === this.frame) this.stop();
+    const next = clamp(this.time + this.direction * this.rate * this.boost * dt, 0, this.end);
+    this.time = next;
+    this.video.currentTime = next;
+    this.drawCurrentFrame();
+    this.canvas.dataset.time = String(next);
+    this.reportStallIfSlow(now);
+    this.onFrame(next);
+    const atBoundary = (this.direction < 0 && next === 0) || (this.direction > 0 && next === this.end);
+    if (atBoundary) this.stop();
     else this.wake();
   }
 
@@ -408,20 +263,83 @@ export class FramePlayer {
     this.boost = 1;
     cancelAnimationFrame(this.raf);
     this.raf = 0;
+    if (this.playRaf) {
+      cancelAnimationFrame(this.playRaf);
+      this.playRaf = 0;
+      this.video?.pause();
+    }
     this.canvas.dataset.playing = "false";
     this.status.textContent = "";
   }
 
+  // Drives continuous forward playback (the initial autoplay, and forward
+  // chapter-to-chapter glides) with the video's own native decode pipeline
+  // instead of repeatedly reassigning currentTime. On weak devices, forcing
+  // a fresh random-access seek on every animation frame can't keep up with
+  // real-time requests: currentTime itself updates instantly (it's just a
+  // number), but the actual decoded picture falls further and further
+  // behind, so the numbers look perfectly smooth while the picture barely
+  // moves. Native playback decodes incrementally and comfortably keeps
+  // pace — confirmed directly against a real low-end device. Backward
+  // motion still has to use scrub()/seek(): <video> has no negative
+  // playbackRate.
+  playTo(targetTime, speed, onDone) {
+    this.stop();
+    const target = clamp(targetTime, 0, this.end);
+    if (target - this.time < 0.001) {
+      onDone?.();
+      return;
+    }
+    this.video.playbackRate = Math.max(0.0625, Math.min(16, speed));
+    this.canvas.dataset.playing = "true";
+    this.video.play().catch(() => {});
+    const tick = (now) => {
+      if (this.closed) return;
+      const t = this.video.currentTime;
+      this.drawCurrentFrame();
+      this.time = t;
+      this.canvas.dataset.time = String(t);
+      this.reportStallIfSlow(now);
+      this.onFrame(t);
+      if (t >= target - 0.01 || this.video.ended || this.video.paused) {
+        this.playRaf = 0;
+        this.video.pause();
+        this.video.playbackRate = 1;
+        this.seek(target);
+        onDone?.();
+        return;
+      }
+      this.playRaf = requestAnimationFrame(tick);
+    };
+    this.playRaf = requestAnimationFrame(tick);
+  }
+
+  // Exact, waits for the browser to actually land on the target frame before
+  // calling onFrame — used for chapter jumps, the initial restored position,
+  // and animateTo()'s final guaranteed-arrival seek, none of which fire more
+  // than a handful of times a second, so the wait is cheap.
   seek(time) {
     this.stop();
-    if (!this.store) return;
-    this.store.clearBootstrap(
-      Math.floor((Math.max(0, Math.min(this.end, time)) * this.fps) / this.perSheet),
-    );
-    this.pendingJump = Math.max(0, Math.min(this.end, time));
-    const index = Math.round(this.pendingJump * this.fps);
-    this.store.focus(Math.floor(index / this.perSheet));
-    this.onSheet();
+    if (!this.ready) {
+      this.pendingJump = clamp(time, 0, this.end ?? time);
+      return;
+    }
+    const target = clamp(time, 0, this.end);
+    this.time = target;
+    this.waitSince = performance.now();
+    // A second seek() fired before the first one's "seeked" arrives (e.g.
+    // two quick backward taps) doesn't cancel the first request — the
+    // browser can still fire "seeked" for it after the newer seek has
+    // already moved on, and that stale resolution used to call render()
+    // with an old target: the text would show the new chapter (driven by
+    // this.time, already overwritten) while the picture briefly showed
+    // whatever the superseded seek left behind. The token makes only the
+    // most recent seek() call allowed to actually render.
+    const token = ++this.seekToken;
+    this.seekAndWait(target).then(() => {
+      if (this.closed || token !== this.seekToken) return;
+      this.render(target);
+    });
   }
 
   fail(error) {
@@ -433,6 +351,11 @@ export class FramePlayer {
   dispose() {
     this.stop();
     this.closed = true;
-    this.store?.dispose();
+    if (this.video) {
+      this.video.pause();
+      this.video.removeAttribute("src");
+      this.video.load();
+      this.video.remove();
+    }
   }
 }
