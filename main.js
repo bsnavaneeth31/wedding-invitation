@@ -328,10 +328,44 @@ function animateTo(targetTime, { speed = 1, onDone } = {}) {
 // opens that explicitly via "the celebrations". After finishing (or being
 // skipped), auto mode navigates exactly like tap mode.
 function runAutoplay() {
-  animateTo(duration - FRAME, { speed: AUTOPLAY_SPEED, onDone: finishAutoplay });
+  animateTo(duration - FRAME, { speed: AUTOPLAY_SPEED, onDone: holdForMusicThenFinish });
+}
+// The video plays at AUTOPLAY_SPEED (1.15x) but the music plays at its own
+// normal speed, so the video always reaches its own true end before the
+// ~46.8s music does — by several real seconds, not the couple this was
+// tuned for. Hold here, on the already-settled final frame, keeping the
+// music running (skip pulseFilmMusic()'s usual idle-pause, since nothing
+// is calling it anymore once the tween itself has stopped) until the music
+// has actually finished too — matching what skipAutoplay() already
+// guarantees outright by forcing the music to its own end. Otherwise a
+// guest who taps left right as the film "finishes" still hears a tail of
+// music that a guest who used Skip never would.
+let musicHoldInterval = 0;
+let musicHoldEndedHandler = null;
+function clearMusicHold() {
+  clearInterval(musicHoldInterval);
+  musicHoldInterval = 0;
+  if (musicHoldEndedHandler) music.removeEventListener("ended", musicHoldEndedHandler);
+  musicHoldEndedHandler = null;
+}
+function holdForMusicThenFinish() {
+  if (navMode !== "auto" || autoplayDone) return;
+  if (!musicReady || music.muted || music.ended) {
+    finishAutoplay();
+    return;
+  }
+  musicHoldInterval = setInterval(pulseFilmMusic, 150);
+  musicHoldEndedHandler = () => {
+    clearMusicHold();
+    finishAutoplay();
+  };
+  music.addEventListener("ended", musicHoldEndedHandler, { once: true });
 }
 function finishAutoplay() {
   if (navMode !== "auto" || autoplayDone) return;
+  // Covers skipAutoplay() (or anything else) reaching here while a
+  // holdForMusicThenFinish() wait is still pending, so it can't leak.
+  clearMusicHold();
   autoplayDone = true;
   autoplayPaused = false;
   cancelAnimationFrame(tweenRaf);
