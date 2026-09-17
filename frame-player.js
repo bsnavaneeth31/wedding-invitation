@@ -30,6 +30,8 @@ export class FramePlayer {
     this.ready = false;
     this.closed = false;
     this.pendingJump = 0;
+    this.seekToken = 0;
+    this.playRaf = 0;
     if (poster) {
       this.poster = new Image();
       this.poster.src = poster;
@@ -261,8 +263,55 @@ export class FramePlayer {
     this.boost = 1;
     cancelAnimationFrame(this.raf);
     this.raf = 0;
+    if (this.playRaf) {
+      cancelAnimationFrame(this.playRaf);
+      this.playRaf = 0;
+      this.video?.pause();
+    }
     this.canvas.dataset.playing = "false";
     this.status.textContent = "";
+  }
+
+  // Drives continuous forward playback (the initial autoplay, and forward
+  // chapter-to-chapter glides) with the video's own native decode pipeline
+  // instead of repeatedly reassigning currentTime. On weak devices, forcing
+  // a fresh random-access seek on every animation frame can't keep up with
+  // real-time requests: currentTime itself updates instantly (it's just a
+  // number), but the actual decoded picture falls further and further
+  // behind, so the numbers look perfectly smooth while the picture barely
+  // moves. Native playback decodes incrementally and comfortably keeps
+  // pace — confirmed directly against a real low-end device. Backward
+  // motion still has to use scrub()/seek(): <video> has no negative
+  // playbackRate.
+  playTo(targetTime, speed, onDone) {
+    this.stop();
+    const target = clamp(targetTime, 0, this.end);
+    if (target - this.time < 0.001) {
+      onDone?.();
+      return;
+    }
+    this.video.playbackRate = Math.max(0.0625, Math.min(16, speed));
+    this.canvas.dataset.playing = "true";
+    this.video.play().catch(() => {});
+    const tick = (now) => {
+      if (this.closed) return;
+      const t = this.video.currentTime;
+      this.drawCurrentFrame();
+      this.time = t;
+      this.canvas.dataset.time = String(t);
+      this.reportStallIfSlow(now);
+      this.onFrame(t);
+      if (t >= target - 0.01 || this.video.ended || this.video.paused) {
+        this.playRaf = 0;
+        this.video.pause();
+        this.video.playbackRate = 1;
+        this.seek(target);
+        onDone?.();
+        return;
+      }
+      this.playRaf = requestAnimationFrame(tick);
+    };
+    this.playRaf = requestAnimationFrame(tick);
   }
 
   // Exact, waits for the browser to actually land on the target frame before
@@ -278,8 +327,17 @@ export class FramePlayer {
     const target = clamp(time, 0, this.end);
     this.time = target;
     this.waitSince = performance.now();
+    // A second seek() fired before the first one's "seeked" arrives (e.g.
+    // two quick backward taps) doesn't cancel the first request — the
+    // browser can still fire "seeked" for it after the newer seek has
+    // already moved on, and that stale resolution used to call render()
+    // with an old target: the text would show the new chapter (driven by
+    // this.time, already overwritten) while the picture briefly showed
+    // whatever the superseded seek left behind. The token makes only the
+    // most recent seek() call allowed to actually render.
+    const token = ++this.seekToken;
     this.seekAndWait(target).then(() => {
-      if (this.closed) return;
+      if (this.closed || token !== this.seekToken) return;
       this.render(target);
     });
   }
