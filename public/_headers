@@ -6,6 +6,18 @@
 /assets/frames/*
   Cache-Control: public, max-age=604800, stale-while-revalidate=86400
 
+# journey.mp4 is scrubbed via <video>.currentTime, which requires the server
+# to honor HTTP Range requests (206 Partial Content) — without an explicit
+# Cache-Control rule here, Cloudflare Pages was serving it as an
+# uncacheable, non-range-able blob (always 200, full body, no
+# Accept-Ranges), which Chrome treats as unseekable — video.seekable came
+# back as [[0,0]] no matter how far playback had buffered. This is what
+# made the picture freeze on every non-Safari browser regardless of any
+# player-side fix.
+/assets/journey.mp4
+  Cache-Control: public, max-age=604800, stale-while-revalidate=86400
+  Accept-Ranges: bytes
+
 /assets/poster/*
   Cache-Control: public, max-age=604800, stale-while-revalidate=86400
 
