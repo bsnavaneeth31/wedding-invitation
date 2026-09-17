@@ -72,6 +72,7 @@ export class FramePlayer {
       this.duration = this.video.duration;
       this.end = Math.max(0, this.duration - END_EPSILON);
       this.resize();
+      await this.warmUpDecoder();
       const startAt = clamp(this.pendingJump ?? 0, 0, this.end);
       await this.seekAndWait(startAt);
       if (this.closed) return;
@@ -82,6 +83,24 @@ export class FramePlayer {
       this.onReady(this);
     } catch (error) {
       this.fail(error);
+    }
+  }
+
+  // On some mobile browsers (Android Chrome especially), a <video> that has
+  // never had play() called doesn't actually decode a new frame just
+  // because currentTime changed — it keeps showing whatever was last
+  // decoded (nothing, for a fresh element), so every subsequent seek looks
+  // like it "worked" (time advances, seeked fires) while the picture never
+  // moves. Desktop Chrome and iOS Safari don't need this nudge, which is
+  // exactly why it only shows up on real Android hardware after deploy. A
+  // brief play/pause activates the decode pipeline before we rely on it.
+  async warmUpDecoder() {
+    try {
+      await this.video.play();
+      this.video.pause();
+    } catch {
+      // Autoplay blocked (rare for a muted video) — falls back to whatever
+      // the browser does by default; not fatal.
     }
   }
 
