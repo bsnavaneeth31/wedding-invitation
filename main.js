@@ -25,6 +25,10 @@ let presented = 0;
 let activeChapter = -1;
 let staticMode = false;
 let player;
+// Set when the guest's first gesture arrives before the player has finished
+// loading its very first frame (common on a cold mobile load) — see
+// beginJourney() and onReady().
+let pendingAutoplay = false;
 let scrollStart = 0;
 let scrollDistance = 1;
 let expectedScrollY = window.scrollY;
@@ -228,6 +232,12 @@ function loadFilm() {
       duration = film.duration;
       if (restoredPosition > .001) film.seek(restoredPosition * (duration - FRAME));
       // Sits still on the hero/home frame from here — see journeyStarted.
+      if (pendingAutoplay) {
+        pendingAutoplay = false;
+        status.textContent = "";
+        runAutoplay();
+        updateFooterLabel(activeChapter);
+      }
     },
     onError() {
       stopPlayback();
@@ -349,8 +359,20 @@ let autoplayPaused = false;
 // an ordinary pause/resume — ensureMusicUnmuted() is a no-op once already
 // started, so it never re-forces sound back on if the guest has since muted.
 function beginJourney() {
+  // Unmuting/starting the music has to happen synchronously inside the
+  // gesture handler (iOS requirement) even if the film itself isn't ready
+  // yet — only the timed playthrough below waits.
   ensureMusicUnmuted();
   autoplayPaused = false;
+  if (!player?.ready) {
+    // A cold mobile load: the first sheet hasn't finished fetching/decoding
+    // yet. Starting the wall-clock-driven tween now would let it race ahead
+    // of what's actually buffered, so the opening seconds stutter as it
+    // scrambles to catch up. Wait for onReady() to kick it off instead —
+    // the "Preparing…" status stays up so it doesn't look stuck.
+    pendingAutoplay = true;
+    return;
+  }
   status.textContent = "";
   runAutoplay();
   updateFooterLabel(activeChapter);

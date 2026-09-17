@@ -251,8 +251,15 @@ export class FramePlayer {
         (error) => this.fail(error),
         {
           frameScale: this.frameScale,
-          prefetchFrames: this.coarse ? 48 : PREFETCH_FRAMES,
-          maxConcurrentLoads: this.coarse ? 4 : 8,
+          // A deeper mobile buffer (3s instead of 2s) so a slow first sheet
+          // fetch/decode — the main cause of a choppy first playthrough on a
+          // cold mobile load — has more runway to catch up before playback
+          // starts consuming it. Doesn't touch image resolution/quality.
+          // Kept well short of doubling: each cached sheet is still ~9MB at
+          // this frameScale (see the ~37MB-at-native-res note above), and
+          // mobile Safari's per-tab budget is the reason this stayed modest.
+          prefetchFrames: this.coarse ? 72 : PREFETCH_FRAMES,
+          maxConcurrentLoads: this.coarse ? 5 : 8,
         },
       );
       this.pendingJump = 0;
