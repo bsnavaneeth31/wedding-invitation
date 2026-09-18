@@ -222,6 +222,16 @@ html.nav-auto .film-region, html.nav-auto .copy-region { cursor: pointer; }
 .chapter-copy h1, .chapter-copy h2 { text-shadow: 0 2px 24px #100b0870; }
 .chapter-copy .eyebrow { color: #f6e4bd; margin-bottom: 15px; font-size: 9px; text-shadow: 0 1px 8px #000; }
 .copy-note { color: #fff8ed; font: 400 clamp(1rem, 1.6vw, 1.3rem)/1.5 var(--serif); margin-top: 20px; text-shadow: 0 1px 12px #000c; }
+.chapter-copy .parents-signoff { margin-top: 26px; }
+.chapter-copy .parents-signoff .parents-names {
+  display: block;
+  margin-top: 8px;
+  font: 400 clamp(1.3rem, 2.2vw, 1.7rem) var(--serif);
+  letter-spacing: 0;
+  text-transform: none;
+  color: #f6e4bd;
+  text-shadow: 0 1px 10px #000c;
+}
 .chapter-copy[data-start='0'] { justify-content: flex-start; padding-top: 15svh; }
 .chapter-copy[data-start='0']::before { background: linear-gradient(180deg, #0d121447, transparent 55%); }
 .chapter-copy[data-start='7'], .chapter-copy[data-start='15.5'] { justify-content: flex-end; padding-bottom: 13svh; }
