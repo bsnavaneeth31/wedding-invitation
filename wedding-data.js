@@ -23,7 +23,7 @@ export const events = [
     note: "Traditional finery, open hearts, and happy tears.",
   },
   {
-    title: "A celebration to follow", label: "Reception",
+    title: "A celebration to follow", label: "Reception. Lunch to follow",
     start: "2026-10-21T11:30:00+05:30", end: "2026-10-21T15:00:00+05:30",
     note: "Laughter, blessings, and celebration.",
   },
