@@ -239,6 +239,7 @@ function loadFilm() {
       duration = film.duration;
       if (restoredPosition > .001) film.seek(restoredPosition * (duration - FRAME));
       // Sits still on the hero/home frame from here — see journeyStarted.
+      markStartOverlayReady();
       if (pendingAutoplay) {
         pendingAutoplay = false;
         scheduleAutoplay();
@@ -399,7 +400,17 @@ function skipAutoplay() {
   // its own end too, so the film and the music are at rest together, and a
   // later backward tap resumes it from the right place instead of a stale one.
   if (musicReady && music.duration) music.currentTime = music.duration;
-  player?.seek(Math.max(0, duration - FRAME));
+  const target = Math.max(0, duration - FRAME);
+  player?.seek(target);
+  // player.seek() only calls back (via onFrame) once the browser actually
+  // lands on that frame, which can take a visible moment. Advance the
+  // chapter/progress UI to the final chapter right now instead of waiting
+  // on that — otherwise finishAutoplay() below flips autoplayDone to true
+  // while activeChapter is still wherever skip was pressed from, and the
+  // footer label reads the wrong combination for a beat ("Tap to continue"
+  // instead of "Back to the beginning") until the seek catches up.
+  presented = target;
+  updateChapter(target);
   finishAutoplay();
 }
 // A stray tap while the film is still playing itself shouldn't jump straight
@@ -691,20 +702,40 @@ loadFilm();
 // here counts, so the film can never end up moving without its music, and a
 // guest who arrives and just scrolls sees the film sitting still instead of
 // racing ahead silently.
+//
+// It opens on a "Loading" state (matching the browser's own loading
+// indicator — the tab's spinner, or a mobile browser's progress bar) and
+// only switches to the tappable "Tap to begin" state once the player has
+// actually decoded its first frame (see markStartOverlayReady(), called from
+// loadFilm()'s onReady). Tapping while still loading is deliberately a
+// no-op rather than a queued start — starting the instant the guest taps
+// early would begin playback before anything is buffered ahead, which is
+// exactly the stutter this is meant to avoid.
 const startOverlay = $("#start-overlay");
+function markStartOverlayReady() {
+  startOverlay.classList.remove("is-loading");
+  startOverlay.setAttribute("aria-label", "Tap to begin the film, with sound");
+  startOverlay.querySelector(".start-overlay-text").textContent = "Tap to begin";
+  startOverlay.tabIndex = 0;
+}
 if (staticMode) {
   startOverlay.remove();
 } else {
   const dismissStartOverlay = () => {
+    if (startOverlay.classList.contains("is-loading")) return;
+    startOverlay.removeEventListener("click", dismissStartOverlay);
+    startOverlay.removeEventListener("keydown", onStartOverlayKeydown);
     startOverlay.classList.add("is-hidden");
     beginJourney();
   };
-  startOverlay.addEventListener("click", dismissStartOverlay, { once: true });
-  startOverlay.addEventListener("keydown", (event) => {
+  function onStartOverlayKeydown(event) {
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
     dismissStartOverlay();
-  }, { once: true });
+  }
+  startOverlay.addEventListener("click", dismissStartOverlay);
+  startOverlay.addEventListener("keydown", onStartOverlayKeydown);
+  if (player?.ready) markStartOverlayReady();
 }
 
 // Event copy and the calendar use the same editable data (see wedding-data.js).

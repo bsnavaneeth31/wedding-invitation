@@ -336,6 +336,13 @@ export class FramePlayer {
     // whatever the superseded seek left behind. The token makes only the
     // most recent seek() call allowed to actually render.
     const token = ++this.seekToken;
+    // Unlike tick()/scrub()/playTo(), this call has no per-frame loop of its
+    // own to notice a stall via reportStallIfSlow() — a seek to an unbuffered
+    // part of the film (e.g. skipping straight to the end early on) could
+    // otherwise sit there with no feedback at all until it resolves.
+    setTimeout(() => {
+      if (token === this.seekToken) this.reportStallIfSlow(performance.now());
+    }, 400);
     this.seekAndWait(target).then(() => {
       if (this.closed || token !== this.seekToken) return;
       this.render(target);
