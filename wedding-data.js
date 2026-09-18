@@ -17,19 +17,13 @@ export const venue = {
 };
 
 export const events = [
-  // {
-  //   title: "A little sunshine", label: "Haldi & a family brunch",
-  //   start: "2026-10-20T10:00:00+05:30", end: "2026-10-20T13:00:00+05:30",
-  //   note: "Wear a little yellow. Expect a lot of laughter.",
-  // },
   {
-    title: "Under the evening sky", label: "Sangeet & dinner",
-    start: "2026-10-20T19:00:00+05:30", end: "2026-10-20T23:00:00+05:30",
-    // note: "Bring your dancing shoes and your favourite song.",
+    title: "The promise we keep", label: "Muhurtha",
+    start: "2026-10-21T09:00:00+05:30", end: "2026-10-21T11:00:00+05:30",
+    note: "Traditional finery, open hearts, and happy tears.",
   },
   {
-    title: "The promise we keep", label: "Wedding ceremony · Reception to follow",
-    start: "2026-10-21T09:00:00+05:30", end: "2026-10-21T15:00:00+05:30",
-    note: "Traditional finery, open hearts, and happy tears.",
+    title: "A celebration to follow", label: "Reception",
+    start: "2026-10-21T11:30:00+05:30", end: "2026-10-21T15:00:00+05:30",
   },
 ];
