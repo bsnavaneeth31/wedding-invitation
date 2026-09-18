@@ -32,6 +32,11 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
   text-shadow: 0 1px 10px #000;
 }
 .start-overlay-icon { width: 16px; height: 16px; flex-shrink: 0; color: #d0b07a; filter: drop-shadow(0 1px 8px #000); }
+.start-overlay-icon--spinner { display: none; animation: start-overlay-spin 0.9s linear infinite; }
+.start-overlay.is-loading { cursor: default; }
+.start-overlay.is-loading .start-overlay-icon--sound { display: none; }
+.start-overlay.is-loading .start-overlay-icon--spinner { display: block; }
+@keyframes start-overlay-spin { to { transform: rotate(360deg); } }
 .start-overlay.is-hidden { opacity: 0; visibility: hidden; pointer-events: none; }
 html.static-journey .start-overlay { display: none; }
 
