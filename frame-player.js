@@ -10,7 +10,7 @@ const END_EPSILON = 1 / 24;
 // export pass (see scripts.tmp/), so this class only ever deals in plain
 // seconds — no frame-index/source-frame remapping left to do here.
 export class FramePlayer {
-  constructor({ canvas, status, src, poster, onFrame, onReady, onError }) {
+  constructor({ canvas, status, src, poster, endPoster, onFrame, onReady, onError }) {
     this.canvas = canvas;
     this.context = canvas.getContext("2d", { alpha: false });
     this.src = src;
@@ -38,6 +38,13 @@ export class FramePlayer {
       this.poster.onload = () => {
         if (!this.ready) this.drawPoster();
       };
+    }
+    // A pre-rendered still of the film's final (held) frame — see
+    // showEndFrame() — loaded up front alongside the poster so it's ready
+    // well before anyone could plausibly hit "Skip the film".
+    if (endPoster) {
+      this.endPoster = new Image();
+      this.endPoster.src = endPoster;
     }
     this.resize();
   }
@@ -159,6 +166,20 @@ export class FramePlayer {
   drawPoster() {
     if (!this.poster?.complete || !this.poster.naturalWidth) return;
     this.drawImage(this.poster, 0, 0, this.poster.naturalWidth, this.poster.naturalHeight);
+  }
+
+  // Skipping straight to the end still has to wait for a real seek — which,
+  // if that part of the film hasn't buffered yet, can visibly take a moment
+  // — before drawCurrentFrame() has anything new to show. The film's ending
+  // is a held, static frame (see the comment on runAutoplay() in main.js),
+  // so painting this pre-rendered still of it immediately is visually
+  // indistinguishable from the real thing landing a moment later, and makes
+  // the skip itself feel instant. The true frame still takes over via the
+  // normal seek()/render() path right behind it; this is a placeholder only.
+  showEndFrame() {
+    if (!this.endPoster?.complete || !this.endPoster.naturalWidth) return false;
+    this.drawImage(this.endPoster, 0, 0, this.endPoster.naturalWidth, this.endPoster.naturalHeight);
+    return true;
   }
 
   drawImage(image, sx, sy, width, height) {
