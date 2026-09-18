@@ -61,11 +61,11 @@ const navMode = navParam === "tap" || navParam === "scroll" ? navParam : "auto";
 document.documentElement.classList.add(`nav-${navMode}`);
 let tweenRaf = 0;
 let autoplayDone = false;
-// Whether the guest has made the film move at all yet. Before this, the page
-// sits still on the hero/home screen — nothing plays until a touch, tap, key,
-// or scroll attempt — and that same first gesture is what unmutes the music,
-// since it's the only reliable place across every browser (iOS included) to
-// start audible playback.
+// Whether the guest has tapped the start overlay yet. Before this, the page
+// sits still behind the blurred "Tap to begin" screen — nothing plays until
+// that tap (see the #start-overlay wiring near loadFilm()) — and that same
+// tap unmutes the music, since a discrete tap/click is the only reliable
+// gesture across every browser (iOS included) to start audible playback.
 let journeyStarted = false;
 const AUTOPLAY_SPEED = 1.15;
 const TAP_TRANSITION_SPEED = 1.7;
@@ -241,8 +241,7 @@ function loadFilm() {
       // Sits still on the hero/home frame from here — see journeyStarted.
       if (pendingAutoplay) {
         pendingAutoplay = false;
-        status.textContent = "";
-        runAutoplay();
+        scheduleAutoplay();
         updateFooterLabel(activeChapter);
       }
     },
@@ -328,7 +327,23 @@ function animateTo(targetTime, { speed = 1, onDone } = {}) {
 // opens that explicitly via "the celebrations". After finishing (or being
 // skipped), auto mode navigates exactly like tap mode.
 function runAutoplay() {
+  clearOpeningHold();
   animateTo(duration - FRAME, { speed: AUTOPLAY_SPEED, onDone: holdForMusicThenFinish });
+}
+// After the opening tap, sit on the hero frame a moment longer before the
+// film starts moving, so the title line has time to actually be read instead
+// of starting to scroll away immediately. Music (already playing from the
+// tap) is unaffected — only the video's advance is delayed.
+const OPENING_HOLD_MS = 2600;
+let openingHoldTimer = 0;
+function clearOpeningHold() {
+  clearTimeout(openingHoldTimer);
+  openingHoldTimer = 0;
+}
+function scheduleAutoplay() {
+  status.textContent = "";
+  clearOpeningHold();
+  openingHoldTimer = setTimeout(runAutoplay, OPENING_HOLD_MS);
 }
 // The video plays at AUTOPLAY_SPEED (1.15x) but the music plays at its own
 // normal speed, so the video always reaches its own true end before the
@@ -364,7 +379,9 @@ function holdForMusicThenFinish() {
 function finishAutoplay() {
   if (navMode !== "auto" || autoplayDone) return;
   // Covers skipAutoplay() (or anything else) reaching here while a
-  // holdForMusicThenFinish() wait is still pending, so it can't leak.
+  // holdForMusicThenFinish() wait — or the opening hold below — is still
+  // pending, so neither can leak into a state that's already finished.
+  clearOpeningHold();
   clearMusicHold();
   autoplayDone = true;
   autoplayPaused = false;
@@ -410,8 +427,7 @@ function beginJourney() {
     pendingAutoplay = true;
     return;
   }
-  status.textContent = "";
-  runAutoplay();
+  scheduleAutoplay();
   updateFooterLabel(activeChapter);
 }
 function toggleAutoplayPause() {
@@ -460,7 +476,6 @@ function wheelPixels(event) {
   return event.deltaY;
 }
 window.addEventListener("wheel", event => {
-  if (!journeyStarted && navMode === "auto" && !staticMode && inputAllowed(event)) { beginJourney(); return; }
   if (navMode !== "scroll" || !inputAllowed(event) || staticMode || event.ctrlKey || !event.deltaY || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
   event.preventDefault();
   player?.scrub(wheelPixels(event) * (SECS_PER_VIEWPORT_WHEEL / innerHeight));
@@ -508,7 +523,6 @@ stage.addEventListener("touchstart", event => {
 
 stage.addEventListener("touchmove", event => {
   if (!touch || !inputAllowed(event) || !event.touches.length || event.touches.length > 2) return;
-  if (!journeyStarted && navMode === "auto" && !staticMode) beginJourney();
   const next = touchSample(event.touches);
   if (next.count !== touch.count) { touch = next; return; }
   // A two-finger parallel swipe uses the same centroid as one finger. A pinch
@@ -671,6 +685,28 @@ $("#next-chapter").addEventListener("click", () => {
 });
 loadFilm();
 
+// A single blurred "Tap to begin" screen gates the very first interaction.
+// Nothing about the journey (video, music, or the discrete tap/scroll
+// gestures below) starts before this — no gesture short of an actual tap
+// here counts, so the film can never end up moving without its music, and a
+// guest who arrives and just scrolls sees the film sitting still instead of
+// racing ahead silently.
+const startOverlay = $("#start-overlay");
+if (staticMode) {
+  startOverlay.remove();
+} else {
+  const dismissStartOverlay = () => {
+    startOverlay.classList.add("is-hidden");
+    beginJourney();
+  };
+  startOverlay.addEventListener("click", dismissStartOverlay, { once: true });
+  startOverlay.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    dismissStartOverlay();
+  }, { once: true });
+}
+
 // Event copy and the calendar use the same editable data (see wedding-data.js).
 const dateFormat = new Intl.DateTimeFormat("en-GB", {
   day: "numeric",
@@ -786,15 +822,27 @@ window.addEventListener("pagehide", (event) => {
 document.querySelectorAll('a[href="#celebrations"]').forEach((link) =>
   link.addEventListener("click", (event) => {
     event.preventDefault();
+    // Opening the details mid-playthrough is a pause, not a skip — the guest
+    // is coming straight back. Stop the film here exactly as a stray tap
+    // mid-autoplay would (see toggleAutoplayPause's pause branch), so
+    // closing the dialog and tapping again resumes the film *and* the music
+    // from exactly where they left off, instead of jumping ahead or
+    // restarting. Cancel any pending opening-hold timer too, so a dialog
+    // opened in that brief window can't have it fire the film to life
+    // behind the modal once the wait is over.
+    clearOpeningHold();
     stopPlayback();
-    // Explicitly opening the dialog ends the playthrough outright — unlike
-    // a tab blur/hide, this isn't the case stopPlayback()'s auto-mode
-    // exemption is for, so stop the player directly regardless of it
-    // (matters for a still-running native playTo() tween).
+    // Explicitly opening the dialog isn't the case stopPlayback()'s
+    // auto-mode exemption (tab blur/hide) is for, so stop the player
+    // directly regardless of it (matters for a still-running native
+    // playTo() tween).
     player?.stop();
     cancelAnimationFrame(tweenRaf);
     tweenRaf = 0;
-    autoplayDone = true;
+    if (navMode === "auto" && !autoplayDone) {
+      autoplayPaused = true;
+      status.textContent = "Paused — tap to continue";
+    }
     detailsDialog.showModal();
     document.body.style.overflow = "hidden";
   }),
@@ -804,34 +852,27 @@ detailsDialog.addEventListener("close", () => {
   document.body.style.overflow = "";
 });
 
-// Background music. The film itself now waits for the guest's first
-// touch/tap/key/scroll before it moves at all (see journeyStarted), and that
-// same first gesture is what turns the sound on — see ensureMusicUnmuted(),
-// called from beginJourney(). Using a real gesture rather than trying to
-// autoplay muted-then-unmute is what makes this reliable on iOS, where every
-// browser shares WebKit and <audio> autoplay — unlike <video> — doesn't
-// reliably start there without one. The sound toggle stays available
-// afterwards purely to mute/unmute; it never restarts playback.
+// Background music. The film itself waits for the guest's tap on the
+// start overlay before it moves at all (see journeyStarted) — that same tap
+// is what turns the sound on, in ensureMusicUnmuted(), called from
+// beginJourney(). A real, discrete tap/click is what makes this reliable
+// across browsers (iOS included): <audio> autoplay — unlike <video> —
+// doesn't reliably start there without one, and continuous gestures like
+// scroll/wheel/touchmove aren't guaranteed to count as one. There's no mute
+// control once started — a guest who wants it quieter just turns the
+// device volume down.
 const music = $("#bg-music");
-const soundToggle = $("#sound-toggle");
 let musicReady = false;
 let musicIdleTimer = null;
 
-function setSoundUI(playing) {
-  soundToggle.setAttribute("aria-pressed", String(playing));
-  soundToggle.setAttribute("aria-label", playing ? "Mute background music" : "Play background music");
-  soundToggle.firstElementChild.textContent = playing ? "♫" : "♪";
-}
-
-// The one-time switch that turns the music on, fired from the guest's first
-// genuine gesture (see beginJourney() and its callers). A no-op afterwards,
-// so it never re-forces sound back on if the guest has since muted it.
+// The one-time switch that turns the music on, fired from the guest's tap
+// on the start overlay (see beginJourney()). A no-op afterwards.
 function ensureMusicUnmuted() {
   if (journeyStarted) return;
   journeyStarted = true;
   music.muted = false;
   musicReady = true;
-  music.play().then(() => setSoundUI(true)).catch(() => { musicReady = false; });
+  music.play().catch(() => { musicReady = false; });
 }
 
 // Keeps the music's own play/pause state mirrored to the film's: paused the
@@ -861,15 +902,3 @@ function restartFilmMusic() {
   music.currentTime = 0;
   music.play().catch(() => {});
 }
-
-soundToggle.addEventListener("click", () => {
-  if (!journeyStarted) {
-    // The very first gesture anywhere — including tapping this icon
-    // directly — begins the film too, so sound never plays over a frozen
-    // hero frame.
-    beginJourney();
-    return;
-  }
-  music.muted = !music.muted;
-  setSoundUI(!music.muted);
-});
