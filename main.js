@@ -1,5 +1,5 @@
 import { couple, venue, events } from "./wedding-data.js";
-import { FILM_SRC, POSTER } from "./demo-config.js";
+import { FILM_SRC, POSTER, END_POSTER } from "./demo-config.js";
 import { FramePlayer } from "./frame-player.js";
 
 const $ = selector => document.querySelector(selector);
@@ -229,6 +229,7 @@ function loadFilm() {
     canvas, status,
     src: FILM_SRC,
     poster: POSTER,
+    endPoster: END_POSTER,
     onFrame(time) {
       presented = time;
       updateChapter(time);
@@ -401,14 +402,20 @@ function skipAutoplay() {
   // later backward tap resumes it from the right place instead of a stale one.
   if (musicReady && music.duration) music.currentTime = music.duration;
   const target = Math.max(0, duration - FRAME);
+  // The real seek below only paints (via onFrame) once the browser actually
+  // lands on that frame, which — if that part of the film isn't buffered
+  // yet — can take a visible moment. showEndFrame() paints a pre-rendered
+  // still of the (held, static) final frame right now so the cut feels
+  // instant; the real seek still runs behind it and silently takes over
+  // once it lands, which looks identical since nothing in that shot moves.
+  player?.showEndFrame();
   player?.seek(target);
-  // player.seek() only calls back (via onFrame) once the browser actually
-  // lands on that frame, which can take a visible moment. Advance the
-  // chapter/progress UI to the final chapter right now instead of waiting
-  // on that — otherwise finishAutoplay() below flips autoplayDone to true
-  // while activeChapter is still wherever skip was pressed from, and the
-  // footer label reads the wrong combination for a beat ("Tap to continue"
-  // instead of "Back to the beginning") until the seek catches up.
+  // Same reasoning as showEndFrame() above, for the text instead of the
+  // picture: don't wait on the real seek to advance the chapter/progress UI
+  // to the final chapter — otherwise finishAutoplay() below flips
+  // autoplayDone to true while activeChapter is still wherever skip was
+  // pressed from, and the footer label reads the wrong combination for a
+  // beat ("Tap to continue" instead of "Back to the beginning").
   presented = target;
   updateChapter(target);
   finishAutoplay();
