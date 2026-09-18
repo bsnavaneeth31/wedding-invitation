@@ -19,11 +19,12 @@ export const venue = {
 export const events = [
   {
     title: "The promise we keep", label: "Muhurtha",
-    start: "2026-10-21T09:00:00+05:30", end: "2026-10-21T11:00:00+05:30",
+    start: "2026-10-21T09:00:00+05:30", end: "2026-10-21T10:30:00+05:30",
     note: "Traditional finery, open hearts, and happy tears.",
   },
   {
     title: "A celebration to follow", label: "Reception",
     start: "2026-10-21T11:30:00+05:30", end: "2026-10-21T15:00:00+05:30",
+    note: "Laughter, blessings, and celebration.",
   },
 ];
