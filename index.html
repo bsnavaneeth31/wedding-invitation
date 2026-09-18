@@ -15,14 +15,17 @@
   <script type="module" src="/main.js"></script>
 </head>
 <body>
-  <div id="start-overlay" class="start-overlay" role="button" tabindex="0" aria-label="Tap to begin the film, with sound">
+  <div id="start-overlay" class="start-overlay is-loading" role="button" tabindex="-1" aria-label="Just a moment, the film is loading">
     <span class="start-overlay-label">
-      <svg class="start-overlay-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <svg class="start-overlay-icon start-overlay-icon--spinner" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="16 40" />
+      </svg>
+      <svg class="start-overlay-icon start-overlay-icon--sound" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
         <path d="M3 9.5v5h3.4L11 18V6L6.4 9.5H3z" fill="currentColor" />
         <path d="M14.8 8.2a5.4 5.4 0 0 1 0 7.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
         <path d="M17.6 5.6a9 9 0 0 1 0 12.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
       </svg>
-      Tap to begin
+      <span class="start-overlay-text">Just a moment</span>
     </span>
   </div>
   <a href="#celebrations" class="skip-link">Skip the film to wedding details</a>
